@@ -1,0 +1,15 @@
+.azure/
+.private/
+.env*
+*.pem
+*.key
+*.pfx
+*.p12
+*.tfstate*
+__pycache__/
+.venv/
+*.pyc
+build/
+dist/
+*.egg-info/
+*.parameters.json
