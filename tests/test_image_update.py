@@ -177,18 +177,25 @@ class ImageUpdateTests(unittest.TestCase):
                'status': 'completed', 'conclusion': 'success'}
         jobs = [{'name': name, 'status': 'completed', 'conclusion': 'success'} for name in u.REQUIRED_JOBS]
         wrong = {**run, 'head_sha': 'stale'}
-        self.api.side_effect = [{'workflow_runs': [wrong]}, None, {'workflow_runs': [run]}, {'jobs': jobs}]
+        self.updater.validation_status = Mock()
+        self.api.pages.return_value = jobs
+        self.api.side_effect = [{'workflow_runs': [wrong]}, None, {'workflow_runs': [run]}]
         self.updater.validate(self.branch, 'head')
         self.assertEqual(self.api.call_args_list[1].args, ('/actions/workflows/ci.yml/dispatches', 'POST', {'ref': self.branch}))
-        self.assertEqual(self.api.call_args_list[-1].args[0], '/actions/runs/10/jobs?per_page=100')
+        self.api.pages.assert_called_once_with('/actions/runs/10/jobs')
+        self.assertEqual(self.updater.validation_status.call_args_list[0].args, ('head', 'pending'))
+        self.updater.validation_status.assert_called_with('head', 'success', 10)
 
     def test_existing_failed_checks_are_not_silently_bypassed_or_repeated(self):
         run = {'id': 10, 'head_sha': 'head', 'head_branch': self.branch, 'event': 'workflow_dispatch',
                'status': 'completed', 'conclusion': 'failure'}
-        self.api.side_effect = [{'workflow_runs': [run]}, {'workflow_runs': [run]}, {'jobs': []}]
+        self.updater.validation_status = Mock()
+        self.api.pages.return_value = []
+        self.api.side_effect = [{'workflow_runs': [run]}, {'workflow_runs': [run]}]
         with self.assertRaisesRegex(u.UpdateError, 'image-validation-failed-pr-left-open'):
             self.updater.validate(self.branch, 'head')
         self.assertTrue(all(len(call.args) == 1 for call in self.api.call_args_list))
+        self.updater.validation_status.assert_called_with('head', 'failure', 10)
 
     def test_successful_update_merges_then_explicitly_dispatches_production(self):
         self.updater.main_sha = Mock(return_value='base'); self.api.lock.return_value = self.lock
@@ -200,3 +207,74 @@ class ImageUpdateTests(unittest.TestCase):
         self.updater.validate.assert_called_once_with(self.branch, 'head')
         self.updater.merge.assert_called_once_with('base', self.branch, 'head', 7, self.updated)
         self.updater.production.assert_called_once_with('merged')
+
+    def validation_api(self, *, conclusion='success', jobs=None):
+        run = {'id': 10, 'head_sha': 'head', 'head_branch': self.branch, 'event': 'workflow_dispatch',
+               'status': 'completed', 'conclusion': conclusion}
+        self.api.pages.return_value = jobs if jobs is not None else [
+            {'name': name, 'status': 'completed', 'conclusion': 'success'} for name in u.REQUIRED_JOBS]
+        def call(path, method='GET', body=None):
+            if path.startswith('/statuses/'):
+                self.assertEqual(method, 'POST')
+                self.assertEqual(path, '/statuses/head')
+                return {}
+            self.assertEqual(method, 'GET')
+            return {'workflow_runs': [run]}
+        self.api.side_effect = call
+
+    def statuses(self):
+        return [call.args[2] for call in self.api.call_args_list if call.args[0] == '/statuses/head']
+
+    def test_trusted_updater_publishes_both_exact_head_statuses_after_verified_jobs(self):
+        self.validation_api()
+        self.updater.validate(self.branch, 'head')
+        statuses = self.statuses()
+        self.assertEqual([(s['context'], s['state']) for s in statuses], [
+            ('container-policies', 'pending'), ('validate', 'pending'),
+            ('container-policies', 'success'), ('validate', 'success')])
+        self.assertTrue(all(s['target_url'] == 'https://github.com/example/infra/actions/runs/10'
+                            for s in statuses if s['state'] == 'success'))
+        self.api.pages.assert_called_once_with('/actions/runs/10/jobs')
+
+    def test_failed_skipped_or_missing_required_jobs_never_publish_success(self):
+        for conclusion in ['failure', 'cancelled', 'skipped', 'success']:
+            for jobs in [[], [{'name': 'validate', 'status': 'completed', 'conclusion': 'success'}],
+                         [{'name': n, 'status': 'completed', 'conclusion': 'skipped'} for n in u.REQUIRED_JOBS]]:
+                with self.subTest(conclusion=conclusion, jobs=jobs):
+                    self.api.reset_mock()
+                    self.validation_api(conclusion=conclusion, jobs=jobs)
+                    with self.assertRaisesRegex(u.UpdateError, 'image-validation-failed-pr-left-open'):
+                        self.updater.validate(self.branch, 'head')
+                    self.assertEqual([s['state'] for s in self.statuses()], ['pending', 'pending', 'failure', 'failure'])
+
+    def test_validation_timeout_reports_error_for_both_contexts(self):
+        self.updater.now = Mock(side_effect=[0, 1801])
+        self.api.return_value = {'workflow_runs': []}
+        with self.assertRaisesRegex(u.UpdateError, 'image-validation-timeout'):
+            self.updater.validate(self.branch, 'head')
+        self.assertEqual([s['state'] for s in self.statuses()], ['pending', 'pending', 'error', 'error'])
+        self.assertFalse(any(c.args[0].endswith('/merge') for c in self.api.call_args_list))
+
+    def test_validation_api_error_never_leaves_success_statuses(self):
+        def call(path, method='GET', body=None):
+            if path.startswith('/statuses/'): return {}
+            raise u.UpdateError('github-api-503')
+        self.api.side_effect = call
+        with self.assertRaisesRegex(u.UpdateError, 'github-api-503'):
+            self.updater.validate(self.branch, 'head')
+        self.assertEqual([s['state'] for s in self.statuses()], ['pending', 'pending', 'error', 'error'])
+
+    def test_commit_status_permission_is_limited_to_trusted_updater(self):
+        workflow = (ROOT/'.github/workflows/image-update.yml').read_text()
+        self.assertIn('      statuses: write', workflow)
+        validation = (ROOT/'.github/workflows/ci.yml').read_text()
+        self.assertIn('  contents: read', validation)
+        self.assertNotIn('statuses: write', validation)
+
+    def test_merge_rejection_is_identified_without_exposing_github_response(self):
+        import io
+        error = u.urllib.error.HTTPError('https://api.github.com/', 405, 'blocked', {},
+                                        io.BytesIO(b'{"message":"private details"}'))
+        with patch.object(u, 'read_url', side_effect=error):
+            with self.assertRaisesRegex(u.UpdateError, '^protected-merge-blocked-pr-left-open$'):
+                u.GitHub(self.repo, 'synthetic')('/pulls/7/merge', 'PUT', {'sha': 'head'})

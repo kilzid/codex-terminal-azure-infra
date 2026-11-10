@@ -89,6 +89,8 @@ class GitHub:
         except urllib.error.HTTPError as error:
             if error.code == 403 and path == '/pulls' and method == 'POST':
                 raise UpdateError('actions-pull-request-creation-not-permitted') from None
+            if error.code == 405 and re.fullmatch(r'/pulls/[0-9]+/merge', path) and method == 'PUT':
+                raise UpdateError('protected-merge-blocked-pr-left-open') from None
             raise UpdateError('github-api-' + str(error.code)) from None
 
     def optional(self, path):
@@ -179,26 +181,54 @@ class Updater:
                 self.api('/pulls/' + str(old['number']), 'PATCH', {'state': 'closed'})
         return branch, head, pr['number']
 
+    def validation_status(self, head, state, run_id=None):
+        # workflow_dispatch job checks are not eligible PR merge requirements.
+        # The trusted main updater attests the verified results with commit statuses;
+        # candidate workflows keep a read-only token and never report their own success.
+        descriptions = {'pending': 'Waiting for exact-head image validation',
+                        'success': 'Both required image validation jobs passed',
+                        'failure': 'Image validation failed; see Validate run',
+                        'error': 'Image validation did not complete'}
+        require(state in descriptions, 'invalid-validation-status')
+        target = 'https://github.com/' + self.api.repository + '/actions'
+        if run_id is not None:
+            require(type(run_id) is int and run_id > 0, 'invalid-validation-run')
+            target += '/runs/' + str(run_id)
+        for name in sorted(REQUIRED_JOBS):
+            self.api('/statuses/' + head, 'POST', {'state': state, 'context': name,
+                'description': descriptions[state], 'target_url': target})
+
     def validate(self, branch, head):
         path = '/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=' + branch + '&per_page=100'
         def runs():
             return [r for r in self.api(path)['workflow_runs'] if r['head_sha'] == head and
                     r['event'] == 'workflow_dispatch' and r['head_branch'] == branch]
-        existing = runs()
-        if not existing:
-            self.api('/actions/workflows/ci.yml/dispatches', 'POST', {'ref': branch})
-        deadline = self.now() + 1800
-        while self.now() < deadline:
-            matching = runs()
-            if matching:
-                run = max(matching, key=lambda r: r['id'])
-                if run['status'] == 'completed':
-                    jobs = self.api('/actions/runs/' + str(run['id']) + '/jobs?per_page=100')['jobs']
-                    require(passed_jobs(run, jobs, head), 'image-validation-failed-pr-left-open')
-                    return
-                require(run['status'] in ACTIVE, 'image-validation-not-running')
-            self.sleep(15)
-        raise UpdateError('image-validation-timeout-pr-left-open')
+        self.validation_status(head, 'pending')
+        try:
+            existing = runs()
+            if not existing:
+                self.api('/actions/workflows/ci.yml/dispatches', 'POST', {'ref': branch})
+            deadline = self.now() + 1800
+            while self.now() < deadline:
+                matching = runs()
+                if matching:
+                    run = max(matching, key=lambda r: r['id'])
+                    if run['status'] == 'completed':
+                        jobs = self.api.pages('/actions/runs/' + str(run['id']) + '/jobs')
+                        if not passed_jobs(run, jobs, head):
+                            self.validation_status(head, 'failure', run['id'])
+                            raise UpdateError('image-validation-failed-pr-left-open')
+                        # Publish only after the entire workflow and both required jobs
+                        # succeeded for this exact head, event and branch.
+                        self.validation_status(head, 'success', run['id'])
+                        return
+                    require(run['status'] in ACTIVE, 'image-validation-not-running')
+                self.sleep(15)
+            raise UpdateError('image-validation-timeout-pr-left-open')
+        except Exception as error:
+            if str(error) != 'image-validation-failed-pr-left-open':
+                self.validation_status(head, 'error')
+            raise
 
     def merge(self, base, branch, head, number, lock):
         require(self.main_sha() == base, 'main-advanced-pr-left-open')
