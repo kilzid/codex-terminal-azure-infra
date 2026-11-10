@@ -74,6 +74,30 @@ class ControllerTests(unittest.TestCase):
         c.cloud.backup.assert_not_called();c.deployment.assert_not_called()
         c.cloud.graph.assert_not_called();c.cloud.arm.assert_not_called()
 
+    def test_terminal_image_update_uses_daily_backup_and_still_verifies_and_commits(self):
+        c=self.controller()
+        c.plan=Mock(return_value={'infrastructure':[],
+            'host':{'applied':{'commit':'synthetic'},'changed':['compose.json'],'before':{},'terminalImageOnly':True},
+            'budgetChanged':False,'callbackChanged':False})
+        c.host=Mock(return_value={'status':'applied','changed':['compose.json'],'affected':['terminal']})
+        c.cloud.identity.return_value={'web':{'redirectUris':['https://terminal.example.com/oauth2/callback']}}
+        result=c.apply()
+        self.assertEqual(result['affectedServices'],['terminal'])
+        c.cloud.backup.assert_not_called()
+        c.public_verify.assert_called_once()
+        self.assertEqual([v.args[0] for v in c.host.call_args_list],['apply','commit'])
+
+    def test_infrastructure_or_callback_change_still_backs_up_with_terminal_update(self):
+        for infrastructure, callback in [([{'changeType':'Modify'}],False),([],True)]:
+            with self.subTest(callback=callback):
+                c=self.controller()
+                c.plan=Mock(return_value={'infrastructure':infrastructure,
+                    'host':{'applied':{'commit':'synthetic'},'changed':['compose.json'],'before':{},'terminalImageOnly':True},
+                    'budgetChanged':False,'callbackChanged':callback})
+                c.host=Mock(); c.cloud.backup.side_effect=Failure('backup-failed')
+                with self.assertRaises(Failure): c.apply()
+                c.cloud.backup.assert_called_once(); c.host.assert_not_called()
+
     def test_public_health_failure_rolls_back_runtime_and_callback(self):
         c=self.controller();c.plan=Mock(return_value={'infrastructure':[],
             'host':{'applied':{'commit':'synthetic'},'changed':['Caddyfile'],'before':{}},

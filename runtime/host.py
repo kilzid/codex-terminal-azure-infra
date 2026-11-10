@@ -144,10 +144,16 @@ def changes(files):
     changed = sorted(name for name, data in files.items()
                      if not target(name).exists() or digest(name, data) != digest(name, target(name).read_bytes()))
     affected = set()
+    terminal_image_only = False
     if 'compose.json' in changed:
         before = json.loads((ROOT / 'compose.json').read_bytes()) if (ROOT / 'compose.json').exists() else {'services': {}}
         after = json.loads(files['compose.json'])
         affected.update(s for s in SERVICES if before['services'].get(s) != after['services'].get(s))
+        if changed == ['compose.json'] and affected == {'terminal'} and 'terminal' in before['services']:
+            # Compare the complete Compose document after replacing just the image.
+            # Limits, mounts, credentials and other service changes still need a backup.
+            before['services']['terminal']['image'] = after['services']['terminal']['image']
+            terminal_image_only = before == after
     if 'docker-daemon.json' in changed: affected.update(SERVICES)
     if 'oauth2-proxy.cfg' in changed: affected.add('auth')
     if 'Caddyfile' in changed: affected.add('https')
@@ -155,7 +161,8 @@ def changes(files):
     # Docker detects neither changed bind-mounted file contents nor profile changes.
     drift = service_drift(files)
     affected.update(drift)
-    return {'changed': changed, 'affected': sorted(affected), 'serviceDrift': drift, 'before': live_hashes()}
+    return {'changed': changed, 'affected': sorted(affected), 'serviceDrift': drift, 'before': live_hashes(),
+            'terminalImageOnly': terminal_image_only and affected == {'terminal'}}
 
 
 def boundaries(expected):
