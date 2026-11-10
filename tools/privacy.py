@@ -13,6 +13,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+# Repository owner explicitly permits this address in source and commit metadata.
+ALLOWED_EMAILS = {'noreply@github.com', 'kilzid@gmail.com'}
 ALLOWED_UUIDS = {'00000003-0000-0000-c000-000000000000', '18a4783c-866b-4cc7-a460-3d5e5662c884',
                  '246dd0d5-5bd0-4def-940b-0421030a5b68', '00000000-0000-0000-0000-000000000000'}
 EXACT = {'README.md', 'LICENSE', 'NOTICE', '.gitignore', 'requirements.txt', 'images.lock.json',
@@ -60,7 +62,7 @@ def scan(data, private):
         if not (address.is_private or address.is_loopback or address.is_link_local or
                 value in ['168.63.129.16']): raise ValueError('public-address-found')
     for value in re.findall(r'\b[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', text):
-        if value != 'noreply@github.com' and not value.endswith(('@example.com', '@example.invalid', '@users.noreply.github.com')):
+        if value not in ALLOWED_EMAILS and not value.endswith(('@example.com', '@example.invalid', '@users.noreply.github.com')):
             raise ValueError('personal-email-found')
 
 

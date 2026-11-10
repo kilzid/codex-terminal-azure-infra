@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
 const WebSocket=createRequire('/opt/codex-terminal/package.json')('ws');
 let probeStage='http';console.log('NATIVE_STEP='+probeStage);
 try {
@@ -20,7 +21,50 @@ function request(path,method='GET',body,extra={}) {
   req.on('error',reject);req.end(data);
  });
 }
-assert.equal((await request('/api/sessions')).status,200,'same-origin session API');
+const sessions=await request('/api/sessions');
+if(sessions.status===404) {
+ // Remobi shares the live tmux session. Never type into the user's active pane.
+ assert.equal((await request('/')).status,200,'same-origin terminal page');
+ probeStage='websocket';console.log('NATIVE_STEP='+probeStage);
+ const ws=new WebSocket('ws://127.0.0.1:7681/ws',{headers:{host,origin}});
+ let snapshot=false,pong=false,windowId;
+ const timer=setTimeout(()=>ws.terminate(),30000);
+ ws.on('message',raw=>{const m=JSON.parse(raw);if(m.type==='snapshot')snapshot=true;if(m.type==='pong')pong=true;});
+ const tmux=(...args)=>execFileSync('tmux',args,{encoding:'utf8',timeout:3000,stdio:['ignore','pipe','pipe']}).trim();
+ const until=async(check,label)=>{
+  for(let i=0;i<100;i++){if(check())return;await new Promise(resolve=>setTimeout(resolve,50));}
+  throw Error(label);
+ };
+ try {
+  await once(ws,'open');
+  await until(()=>snapshot,'PTY snapshot timeout');
+  ws.send(JSON.stringify({type:'ping'}));
+  await until(()=>pong,'WebSocket protocol timeout');
+  probeStage='origin';console.log('NATIVE_STEP='+probeStage);
+  for(const foreignOrigin of ['https://foreign.example','null',undefined]) {
+   const foreign=new WebSocket('ws://127.0.0.1:7681/ws',{headers:{host,...(foreignOrigin?{origin:foreignOrigin}:{})}});
+   const timeout=setTimeout(()=>foreign.terminate(),5000);
+   try {
+    const status=await new Promise((resolve,reject)=>{
+     foreign.once('unexpected-response',(_req,res)=>{res.resume();resolve(res.statusCode);});
+     foreign.once('open',()=>resolve(101));foreign.once('error',reject);
+    });
+    assert.equal(status,401,'foreign/missing WebSocket origin rejected');
+   } finally { clearTimeout(timeout);foreign.on('error',()=>{});foreign.terminate(); }
+  }
+  probeStage='isolated-pty';console.log('NATIVE_STEP='+probeStage);
+  windowId=tmux('new-window','-d','-t','main','-P','-F','#{window_id}','/bin/bash');
+  assert.match(windowId,/^\$?@\d+$/);
+  tmux('send-keys','-t',windowId,'-l',"printf 'DEPLOYMENT_%s\\n' OK");
+  tmux('send-keys','-t',windowId,'Enter');
+  await until(()=>tmux('capture-pane','-p','-t',windowId).includes('DEPLOYMENT_OK'),'isolated PTY command timeout');
+ } finally {
+  if(windowId)tmux('kill-window','-t',windowId);
+  clearTimeout(timer);ws.terminate();
+ }
+ console.log('DEPLOYED_REMOBI_HTTP_WEBSOCKET_ORIGIN_PTY_OK');
+} else {
+assert.equal(sessions.status,200,'same-origin session API');
 probeStage='origin';console.log('NATIVE_STEP='+probeStage);
 assert.equal((await request('/api/sessions','GET',undefined,{origin:'https://foreign.example','sec-fetch-site':'cross-site'})).status,403,'cross-origin rejection');
 probeStage='create-session';console.log('NATIVE_STEP='+probeStage);
@@ -58,6 +102,7 @@ try {
  const removed=await request('/api/sessions/'+encodeURIComponent(session.id),'DELETE');
  assert.ok([200,204].includes(removed.status),'temporary session cleanup');
  if(failureStage)probeStage=failureStage;
+}
 }
 
 } catch(error) {
