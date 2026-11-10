@@ -13,6 +13,8 @@ from pathlib import Path
 import secrets
 import sys
 import time
+import urllib.error
+import uuid
 
 from cloud import Failure, atomic, az, require
 from controller import Controller, ROOT
@@ -145,7 +147,7 @@ def test(ctl):
             '--subscription',p['subscriptionId'])
         state.update(restoreGroup=restore_group,stagingStorage=account['id']);atomic(state_path,state)
         job=az('backup','restore','restore-disks','--resource-group',p['resourceGroup'],'--vault-name',p['resources']['vaultName'],
-            '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['backupItem'],'--rp-name',point['name'],
+            '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['vmName'],'--rp-name',point['name'],
             '--storage-account',account['id'],'--storage-account-resource-group',restore_group,'--target-resource-group',restore_group,
             '--restore-only-osdisk','true','--restore-as-unmanaged-disks','false','--subscription',p['subscriptionId'])
         state['restoreJob']=job['name'];atomic(state_path,state)
@@ -176,7 +178,7 @@ def cleanup(ctl):
     for item in items:
         require(item['properties']['sourceResourceId'].lower()==ctl.cloud.vm.lower(),'cleanup-backup-source-mismatch')
         az('backup','protection','disable','--resource-group',p['resourceGroup'],'--vault-name',p['resources']['vaultName'],
-           '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['backupItem'],
+           '--container-name',p['resources']['vmName'],'--item-name',p['resources']['vmName'],
            '--backup-management-type','AzureIaasVM','--delete-backup-data','true','--yes','--subscription',p['subscriptionId'])
     vm=ctl.cloud.arm(ctl.cloud.vm)
     disk=vm['properties']['storageProfile']['osDisk']['managedDisk']['id']
@@ -197,13 +199,59 @@ def cleanup(ctl):
     print('{"status":"isolated-compute-cleaned-backup-soft-delete-retained"}')
 
 
+def cleanup_identity(ctl):
+    """Remove only identities and role IDs created for this tagged test deployment."""
+    assert_isolated(ctl)
+    p=ctl.private
+    require((ctl.directory/'cleanup-state.json').exists(), 'cleanup-compute-first')
+    require(p['budgetName']==p['prefix']+'-monthly', 'cleanup-budget-name-mismatch')
+    def optional(call, path, method='GET', **kwargs):
+        try:return call(path,method,**kwargs)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:raise
+            return None
+    # Validate both applications before removing any tenant object or permission.
+    applications=[]
+    for kind,suffix in [('runtime','-runtime'),('deployment','-github-deployment')]:
+        path='applications/'+p[kind+'ApplicationObjectId']
+        app=optional(ctl.cloud.graph,path)
+        if app:
+            require(app['appId']==p[kind+'ClientId'] and app['displayName']==p['prefix']+suffix,
+                    'cleanup-application-identity-mismatch')
+            applications.append(path)
+    subscription='/subscriptions/'+p['subscriptionId']
+    for suffix,scope in [('runtime',ctl.cloud.rg),('budget',ctl.budget_path)]:
+        role_id=str(uuid.uuid5(uuid.NAMESPACE_URL,subscription+'/'+p['deploymentClientId']+'/'+suffix))
+        definition=subscription+'/providers/Microsoft.Authorization/roleDefinitions/'+role_id
+        assignment=scope+'/providers/Microsoft.Authorization/roleAssignments/'+str(uuid.uuid5(uuid.NAMESPACE_URL,scope+role_id+p['deploymentObjectId']))
+        actual=optional(ctl.cloud.arm,assignment,api='2022-04-01')
+        if actual:
+            require(actual['properties']['principalId']==p['deploymentObjectId'] and
+                    actual['properties']['roleDefinitionId'].lower()==definition.lower(), 'cleanup-role-identity-mismatch')
+            optional(ctl.cloud.arm,assignment,'DELETE',api='2022-04-01')
+        optional(ctl.cloud.arm,definition,'DELETE',api='2022-04-01')
+    for path in applications:optional(ctl.cloud.graph,path,'DELETE')
+    optional(ctl.cloud.arm,ctl.budget_path,'DELETE',api='2024-08-01')
+    for kind,names in [('metricAlerts',[p['prefix']+'-vm-'+v for v in ['memory','credits','availability']]),
+                       ('actionGroups',[p['prefix']+'-alerts'])]:
+        for name in names:
+            optional(ctl.cloud.arm,ctl.cloud.rg+'/providers/Microsoft.Insights/'+kind+'/'+name,'DELETE',api='2018-03-01' if kind=='metricAlerts' else '2023-01-01')
+    state=json.loads((ctl.directory/'cleanup-state.json').read_text())
+    state['testIdentitiesRolesBudgetAndMonitoringRemoved']=True
+    atomic(ctl.directory/'cleanup-state.json',state)
+    print('{"status":"isolated-test-identities-and-permissions-cleaned"}')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--private',required=True)
     parser.add_argument('--cleanup',action='store_true')
+    parser.add_argument('--cleanup-identity',action='store_true')
     args=parser.parse_args()
     ctl=Controller(args.private)
-    if args.cleanup:cleanup(ctl)
+    require(not (args.cleanup and args.cleanup_identity),'choose-one-cleanup-operation')
+    if args.cleanup_identity:cleanup_identity(ctl)
+    elif args.cleanup:cleanup(ctl)
     else:
         with local_policy_reader(ctl.cloud):test(ctl)
 

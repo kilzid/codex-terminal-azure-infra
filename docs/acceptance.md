@@ -38,3 +38,11 @@ python3 operations/acceptance.py --cleanup --private /absolute/private/isolated-
 ```
 
 It removes test compute, disks and networking, while retaining the vault's enforced fourteen-day backup soft deletion. Its private cleanup record states when that retained vault can be reviewed for final removal. It never deletes the subscription's shared Azure Backup snapshot resource group. Normal reconciliation has no permission to perform this cleanup.
+
+After compute cleanup succeeds, remove the temporary Entra applications, deployment role assignments/definitions, budget and monitoring:
+
+```sh
+python3 operations/acceptance.py --cleanup-identity --private /absolute/private/isolated-test
+```
+
+This verifies the isolated group tag and both exact application bindings before removing permissions. It keeps the vault and its retained recovery points; it does not change GitHub production secrets or account settings.

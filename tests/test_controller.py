@@ -9,6 +9,28 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'operations'))
 from controller import Controller
 from cloud import Failure
+from acceptance import assert_isolated, cleanup_identity
+
+
+class AcceptanceCleanupTests(unittest.TestCase):
+    def test_cleanup_rejects_production_before_cloud_mutation(self):
+        ctl=Mock(private={'profile':'adopted'})
+        with self.assertRaisesRegex(Failure,'acceptance-forbids-adopted-deployment'):
+            assert_isolated(ctl)
+        ctl.cloud.arm.assert_not_called();ctl.cloud.graph.assert_not_called()
+
+    def test_cleanup_checks_both_application_bindings_before_deleting_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory);(path/'cleanup-state.json').write_text('{}')
+            ctl=Mock(directory=path,private={'prefix':'test','budgetName':'test-monthly',
+                'runtimeApplicationObjectId':'runtime-object','runtimeClientId':'runtime-client',
+                'deploymentApplicationObjectId':'deployment-object','deploymentClientId':'deployment-client'})
+            ctl.cloud.graph.side_effect=[{'appId':'runtime-client','displayName':'test-runtime'},
+                                        {'appId':'different-client','displayName':'test-github-deployment'}]
+            with patch('acceptance.assert_isolated'),self.assertRaisesRegex(Failure,'cleanup-application-identity-mismatch'):
+                cleanup_identity(ctl)
+            ctl.cloud.arm.assert_not_called()
+            self.assertTrue(all(call.args[1:]==('GET',) for call in ctl.cloud.graph.call_args_list))
 
 
 class ControllerTests(unittest.TestCase):
