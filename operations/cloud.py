@@ -28,7 +28,20 @@ def require(value, code):
 
 def command(args, *, data=None, json_output=True):
     result = subprocess.run(args, input=data, capture_output=True, text=True)
-    require(result.returncode == 0, 'external-command-failed')
+    if result.returncode:
+        # Identify the failed operation without exposing arguments, output or account data.
+        stages = {('az', 'backup', 'protection', 'backup-now'): 'azure-backup-trigger',
+                  ('az', 'backup', 'job', 'show'): 'azure-backup-status',
+                  ('az', 'deployment', 'group', 'what-if'): 'azure-infrastructure-preview',
+                  ('az', 'deployment', 'group', 'create'): 'azure-infrastructure-deployment',
+                  ('az', 'vm', 'deallocate'): 'azure-vm-deallocate',
+                  ('az', 'vm', 'resize'): 'azure-vm-resize',
+                  ('az', 'vm', 'start'): 'azure-vm-start'}
+        stage = next((name for prefix, name in stages.items() if tuple(args[:len(prefix)]) == prefix),
+                     'azure-command' if args and args[0] == 'az' else 'external-command')
+        # Only these public service codes may be reflected in the fixed error code.
+        denied = re.search(r'\((?:AuthorizationFailed|LinkedAuthorizationFailed|Forbidden)\)', result.stderr or '')
+        raise Failure(stage + ('-authorization-failed' if denied else '-failed'))
     return json.loads(result.stdout) if json_output and result.stdout.strip() else result.stdout
 
 

@@ -182,7 +182,7 @@ class ImageUpdateTests(unittest.TestCase):
         self.api.side_effect = [{'workflow_runs': [wrong]}, None, {'workflow_runs': [run]}]
         self.updater.validate(self.branch, 'head')
         self.assertEqual(self.api.call_args_list[1].args, ('/actions/workflows/ci.yml/dispatches', 'POST', {'ref': self.branch}))
-        self.api.pages.assert_called_once_with('/actions/runs/10/jobs')
+        self.api.pages.assert_called_once_with('/actions/runs/10/jobs', key='jobs')
         self.assertEqual(self.updater.validation_status.call_args_list[0].args, ('head', 'pending'))
         self.updater.validation_status.assert_called_with('head', 'success', 10)
 
@@ -234,7 +234,7 @@ class ImageUpdateTests(unittest.TestCase):
             ('container-policies', 'success'), ('validate', 'success')])
         self.assertTrue(all(s['target_url'] == 'https://github.com/example/infra/actions/runs/10'
                             for s in statuses if s['state'] == 'success'))
-        self.api.pages.assert_called_once_with('/actions/runs/10/jobs')
+        self.api.pages.assert_called_once_with('/actions/runs/10/jobs', key='jobs')
 
     def test_failed_skipped_or_missing_required_jobs_never_publish_success(self):
         for conclusion in ['failure', 'cancelled', 'skipped', 'success']:
@@ -278,3 +278,42 @@ class ImageUpdateTests(unittest.TestCase):
         with patch.object(u, 'read_url', side_effect=error):
             with self.assertRaisesRegex(u.UpdateError, '^protected-merge-blocked-pr-left-open$'):
                 u.GitHub(self.repo, 'synthetic')('/pulls/7/merge', 'PUT', {'sha': 'head'})
+
+    def test_github_jobs_pagination_extracts_the_jobs_array_from_each_page(self):
+        first = [{'name': 'unrelated'} for _ in range(100)]
+        last = [{'name': name, 'status': 'completed', 'conclusion': 'success'} for name in u.REQUIRED_JOBS]
+        responses = [(json.dumps({'total_count': 102, 'jobs': page}).encode(), {}) for page in [first, last]]
+        with patch.object(u, 'read_url', side_effect=responses) as read:
+            jobs = u.GitHub(self.repo, 'synthetic').pages('/actions/runs/10/jobs', key='jobs')
+        self.assertEqual(jobs, first + last)
+        self.assertTrue(read.call_args_list[1].args[0].endswith('?per_page=100&page=2'))
+
+    def test_validation_uses_real_github_client_response_shapes_end_to_end(self):
+        # The previous mocked pages() returned a list and missed GitHub's jobs wrapper.
+        api = u.GitHub(self.repo, 'synthetic')
+        updater = u.Updater(api, sleep=Mock())
+        run = {'id': 10, 'head_sha': 'head', 'head_branch': self.branch, 'event': 'workflow_dispatch',
+               'status': 'completed', 'conclusion': 'success'}
+        jobs = [{'name': name, 'status': 'completed', 'conclusion': 'success'} for name in u.REQUIRED_JOBS]
+        posted = []
+        def read(url, *, headers, method, body):
+            if '/statuses/' in url:
+                self.assertEqual(method, 'POST')
+                posted.append(body)
+                value = {'id': len(posted)}
+            elif '/jobs?' in url:
+                value = {'total_count': 2, 'jobs': jobs}
+            else:
+                value = {'total_count': 1, 'workflow_runs': [run]}
+            return json.dumps(value).encode(), {}
+        with patch.object(u, 'read_url', side_effect=read):
+            updater.validate(self.branch, 'head')
+        self.assertEqual([(s['context'], s['state']) for s in posted], [
+            ('container-policies', 'pending'), ('validate', 'pending'),
+            ('container-policies', 'success'), ('validate', 'success')])
+
+    def test_invalid_jobs_response_fails_with_a_public_error_instead_of_typeerror(self):
+        for value in [{'jobs': 'invalid'}, {'total_count': 2}, ['jobs']]:
+            with self.subTest(value=value), patch.object(u, 'read_url', return_value=(json.dumps(value).encode(), {})):
+                with self.assertRaisesRegex(u.UpdateError, '^invalid-paginated-response$'):
+                    u.GitHub(self.repo, 'synthetic').pages('/actions/runs/10/jobs', key='jobs')
