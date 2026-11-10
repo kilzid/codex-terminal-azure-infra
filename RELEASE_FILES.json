@@ -1,5 +1,6 @@
 [
   ".github/workflows/ci.yml",
+  ".github/workflows/image-update.yml",
   ".github/workflows/production.yml",
   ".gitignore",
   "LICENSE",
@@ -56,6 +57,7 @@
   "tests/native-smoke.mjs",
   "tests/test_cloud.py",
   "tests/test_controller.py",
+  "tests/test_image_update.py",
   "tests/test_preview.py",
   "tests/test_runtime.py",
   "tests/test_security.py",
@@ -63,5 +65,6 @@
   "tools/ci-private.py",
   "tools/container-check.sh",
   "tools/privacy.py",
-  "tools/proxy-check.py"
+  "tools/proxy-check.py",
+  "tools/update-terminal.py"
 ]

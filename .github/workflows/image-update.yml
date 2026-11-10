@@ -1,0 +1,36 @@
+name: Update terminal image
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/image-update.yml
+      - tools/update-terminal.py
+permissions:
+  contents: read
+concurrency:
+  group: terminal-image-update
+  cancel-in-progress: false
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Discover, validate and merge terminal image update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/update-terminal.py

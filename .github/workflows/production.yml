@@ -5,6 +5,11 @@ on:
   schedule:
     - cron: '17 5 * * *'
   workflow_dispatch:
+    inputs:
+      reconcile:
+        description: Apply the current main revision before verification
+        type: boolean
+        default: false
 permissions:
   contents: read
 # Never cancel an active mutation or replace a queued deployment with a scheduled
@@ -53,7 +58,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           enable-AzPSSession: false
       - name: Reconcile merged configuration
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.reconcile)
         run: ./codex-infra apply --private "$RUNNER_TEMP/codex-private"
       - name: Verify drift and security
         run: ./codex-infra verify --private "$RUNNER_TEMP/codex-private"

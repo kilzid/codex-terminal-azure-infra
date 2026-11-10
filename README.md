@@ -24,6 +24,6 @@ pip install -r requirements.txt
 
 Changes go through a feature branch and pull request. Merging into `main` automatically tests and deploys the latest desired revision, with no environment reviewer approval. Changes can immediately interrupt active terminal sessions. Workspace files, saved authentication and conversation history remain on disk; reopening conversations is manual.
 
-[Operations and rollback](docs/operations.md), [recovery](docs/recovery.md), [security and privacy](SECURITY.md), and [acceptance testing](docs/acceptance.md) describe the operational contract. Automatic upstream image discovery is deferred; update digests through a reviewed pull request.
+[Operations and rollback](docs/operations.md), [recovery](docs/recovery.md), [security and privacy](SECURITY.md), and [acceptance testing](docs/acceptance.md) describe the operational contract. A daily check at **02:23 UTC** discovers a new terminal image, opens a digest-only PR, and merges it only after both required checks pass on that exact commit. It then starts the ordinary production deployment and VM verification. Other images and infrastructure remain manual changes.
 
 Licensed under Apache-2.0. Moby attribution and its original license are retained in [runtime/NOTICE](runtime/NOTICE) and [runtime/MOBY-LICENSE](runtime/MOBY-LICENSE).
