@@ -1,0 +1,11 @@
+{
+  "terminal": "ghcr.io/dorseg/codex-terminal@sha256:6e89eba98b6570f26684cf88a6ca9736bbcd018c6bddccba45ba345bd05caa9c",
+  "auth": "quay.io/oauth2-proxy/oauth2-proxy@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048",
+  "https": "docker.io/library/caddy@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0",
+  "os": {
+    "publisher": "Debian",
+    "offer": "debian-12",
+    "sku": "12-gen2",
+    "version": "0.20261026.2643"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "subscriptionId": "00000000-0000-0000-0000-000000000000",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "adminObjectId": "00000000-0000-0000-0000-000000000000",
+  "userObjectId": "00000000-0000-0000-0000-000000000000",
+  "resourceGroup": "rg-codex-terminal",
+  "prefix": "codex-terminal",
+  "location": "northeurope",
+  "contactEmail": "owner@example.com",
+  "adminPublicKey": "REPLACE_WITH_YOUR_ED25519_PUBLIC_KEY",
+  "budgetName": "codex-terminal-monthly",
+  "budgetStartDate": "2026-11-01T00:00:00Z",
+  "profile": "deployment",
+  "repository": "YOUR-OWNER/YOUR-REPOSITORY",
+  "resources": {
+    "vmName": "codex-terminal-vm",
+    "vaultName": "codex-terminal-backup",
+    "backupContainer": "iaasvmcontainer;iaasvmcontainerv2;rg-codex-terminal;codex-terminal-vm",
+    "backupItem": "vm;iaasvmcontainerv2;rg-codex-terminal;codex-terminal-vm",
+    "backupSnapshotResourceGroup": "AzureBackupRG_northeurope_1"
+  }
+}

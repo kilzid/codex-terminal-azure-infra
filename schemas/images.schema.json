@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "terminal": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/dorseg/codex-terminal@sha256:[0-9a-f]{64}$"
+    },
+    "auth": {
+      "type": "string",
+      "pattern": "^quay\\.io/oauth2-proxy/oauth2-proxy@sha256:[0-9a-f]{64}$"
+    },
+    "https": {
+      "type": "string",
+      "pattern": "^docker\\.io/library/caddy@sha256:[0-9a-f]{64}$"
+    },
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publisher": {
+          "const": "Debian"
+        },
+        "offer": {
+          "const": "debian-12"
+        },
+        "sku": {
+          "const": "12-gen2"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      },
+      "required": [
+        "publisher",
+        "offer",
+        "sku",
+        "version"
+      ]
+    }
+  },
+  "required": [
+    "terminal",
+    "auth",
+    "https",
+    "os"
+  ]
+}

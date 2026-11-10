@@ -1,0 +1,7 @@
+The seccomp and AppArmor profiles are based on github.com/moby/profiles, licensed Apache-2.0.
+Copyright The Moby Authors.
+Seccomp source blob: 6e5e47e242892aaa290f916ba1045f9213ef0b84.
+AppArmor template source blob: 99873f3730b1b4b9db197746f3f25dbe576d2eea.
+Local changes: permit the unprivileged namespace/mount operations required by Codex's
+inner sandbox; restrict seccomp architectures to this deployment's x86-64 VM.
+All other seccomp default-deny rules and AppArmor kernel-file restrictions are retained.

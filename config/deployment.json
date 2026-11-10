@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "vmSize": "Standard_B1ms",
+  "monthlyBudget": 100,
+  "backup": {
+    "dailyRetentionDays": 7,
+    "instantRetentionDays": 2
+  },
+  "monitor": {
+    "memoryPercent": 15,
+    "cpuCredits": 10
+  },
+  "retention": {
+    "runCommandDays": 7,
+    "runtimeRevisions": 5,
+    "auditDays": 30
+  },
+  "optional": {
+    "retainedRecovery": false,
+    "fileShareBackups": false,
+    "auditLogging": false
+  }
+}

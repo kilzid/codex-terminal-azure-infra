@@ -1,0 +1,33 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages: [ca-certificates, curl, gnupg, python3, rsync, cifs-utils, apparmor, apparmor-utils, unattended-upgrades]
+write_files:
+  - path: /etc/sysctl.d/90-codex-terminal.conf
+    permissions: '0644'
+    content: |
+      user.max_user_namespaces=16384
+  - path: /etc/apt/apt.conf.d/52codex-security-updates
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "false";
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+runcmd:
+  - |
+    set -eu
+    install -m 0755 -d /etc/apt/keyrings /etc/docker
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+    gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | grep -q '9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+    chmod 0644 /etc/apt/keyrings/docker.asc
+    echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' > /etc/apt/sources.list.d/docker.list
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    printf '%s\n' '{"log-driver":"json-file","log-opts":{"max-size":"5m","max-file":"3"},"live-restore":true}' > /etc/docker/daemon.json
+    systemctl enable --now docker
+    systemctl restart docker
+    sysctl --system >/dev/null
+    systemctl disable --now ssh.service || true
+    install -d -m 0700 /etc/codex-terminal
+    install -d -m 0755 /srv/codex-terminal
+    install -d -m 0700 -o 1000 -g 1000 /srv/codex-terminal/workspace /srv/codex-terminal/codex-config
+    touch /etc/codex-terminal/os-ready
