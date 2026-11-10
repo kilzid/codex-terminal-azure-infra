@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 ROOT = Path('/etc/codex-terminal')
 RECORDS = ROOT / 'revisions'
 FILES = frozenset(['compose.json', 'oauth2-proxy.cfg', 'Caddyfile', 'seccomp.json',
-                   'apparmor.profile', 'network-rules.sh', 'boot-guards.sh', 'codex-config.py',
+                   'apparmor.profile', 'network-rules.sh', 'boot-guards.sh', 'codex-config.py', 'session-manager.mjs', 'session-hooks.toml',
                    'docker-daemon.json', 'sysctl.conf', 'unattended-upgrades.conf', 'terminal.service'])
 OS_FILES = {'docker-daemon.json': '/etc/docker/daemon.json',
             'sysctl.conf': '/etc/sysctl.d/90-codex-terminal.conf',
@@ -83,7 +83,7 @@ def atomic(path, data, *, uid=0, gid=0, mode=0o600):
 def write(name, data):
     atomic(target(name), data, uid=65532 if name == 'oauth2-proxy.cfg' else 0,
            gid=65532 if name == 'oauth2-proxy.cfg' else 0,
-           mode=0o400 if name == 'oauth2-proxy.cfg' else (0o644 if name in OS_FILES else 0o600))
+           mode=0o444 if name in ['session-manager.mjs', 'session-hooks.toml'] else 0o400 if name == 'oauth2-proxy.cfg' else (0o644 if name in OS_FILES else 0o600))
 
 
 def compose(*args, data=None, timeout=600):
@@ -115,6 +115,7 @@ def service_drift(files):
             assert config['Image'] == expected['image']
             image_config = json.loads(run(['docker', 'image', 'inspect', expected['image']]))[0]['Config']
             assert config['User'] == expected.get('user', image_config.get('User', ''))
+            assert config['Cmd'] == expected.get('command', image_config.get('Cmd'))
             assert limits['CapDrop'] == ['ALL'] and not limits['Privileged']
             assert 'no-new-privileges:true' in limits['SecurityOpt']
             expected_mounts = {(v.split(':')[0], v.split(':')[1], not v.endswith(':ro')) for v in expected['volumes']}
@@ -157,7 +158,7 @@ def changes(files):
     if 'docker-daemon.json' in changed: affected.update(SERVICES)
     if 'oauth2-proxy.cfg' in changed: affected.add('auth')
     if 'Caddyfile' in changed: affected.add('https')
-    if {'seccomp.json', 'apparmor.profile', 'codex-config.py'} & set(changed): affected.add('terminal')
+    if {'seccomp.json', 'apparmor.profile', 'codex-config.py', 'session-manager.mjs', 'session-hooks.toml'} & set(changed): affected.add('terminal')
     # Docker detects neither changed bind-mounted file contents nor profile changes.
     drift = service_drift(files)
     affected.update(drift)
@@ -179,7 +180,9 @@ def boundaries(expected):
     assert terminal['AppArmorProfile'] == 'codex-terminal'
     assert any(v.startswith('seccomp=') and 'unconfined' not in v for v in terminal['HostConfig']['SecurityOpt'])
     assert terminal['HostConfig']['PortBindings']['7681/tcp'] == [{'HostIp': '127.0.0.1', 'HostPort': '7681'}]
-    assert {m['Source'] for m in terminal['Mounts']} == {'/srv/codex-terminal/workspace', '/srv/codex-terminal/codex-config'}
+    assert {(m['Source'], m['Destination'], m['RW']) for m in terminal['Mounts']} == {
+        (v.split(':')[0], v.split(':')[1], not v.endswith(':ro'))
+        for v in expected['services']['terminal']['volumes']}
     assert values['auth']['HostConfig']['ReadonlyRootfs']
     assert values['https']['HostConfig']['ReadonlyRootfs']
     assert {v.removeprefix('CAP_') for v in values['https']['HostConfig']['CapAdd'] or []} == {'NET_BIND_SERVICE'}
@@ -249,6 +252,22 @@ def record(payload, extra=None):
 
 
 
+def checkpoint_terminal(files=None):
+    # Stream the new helper for the first rollout; old containers have no mount yet.
+    values = inspect()
+    if values.get('terminal', {}).get('State', {}).get('Running'):
+        helper_path = ROOT / 'session-manager.mjs'
+        if files is None and not helper_path.exists(): return
+        helper = files['session-manager.mjs'] if files else helper_path.read_bytes()
+        compose('exec', '-T', 'terminal', 'node', '--input-type=module', '-', 'freeze', data=helper)
+
+
+def release_checkpoint():
+    if (ROOT / 'session-manager.mjs').exists():
+        compose('exec', '-T', 'terminal', 'node', '--input-type=module', '-', 'release',
+                data=(ROOT / 'session-manager.mjs').read_bytes())
+
+
 def configure_codex_defaults():
     compose('stop', '--timeout', '30', 'terminal')
     config_root = Path('/srv/codex-terminal/codex-config')
@@ -276,6 +295,8 @@ def verify_restored(payload):
 
 def restore(revision, *, preserve_active_credentials=False):
     manifest = json.loads((revision / 'manifest.json').read_text())
+    if 'terminal' in manifest['affected'] or 'docker-daemon.json' in manifest['changed']:
+        checkpoint_terminal()
     active_proxy = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text()) if preserve_active_credentials else None
     for name in manifest['changed']:
         previous = revision / name
@@ -332,6 +353,8 @@ def apply(payload, files):
     settled = False
     try:
         PHASE = 'install-configuration'
+        if not fresh and 'terminal' in plan['affected']:
+            checkpoint_terminal(files)
         for name in plan['changed']: write(name, files[name])
         compose('config', '--quiet')
         if 'terminal.service' in plan['changed']:
@@ -371,6 +394,7 @@ def apply(payload, files):
         if not fresh:
             restore(revision)
             verify_restored(payload)
+            release_checkpoint()
         settled = True
         raise RuntimeError('runtime-update-failed-previous-configuration-restored' if not fresh else 'fresh-runtime-failed') from None
     finally:
@@ -421,10 +445,13 @@ def main(payload):
         revision = RECORDS / revision_id
         manifest = restore(revision, preserve_active_credentials=not payload.get('automaticRollback', False))
         previous = verify_restored(payload)
+        release_checkpoint()
         (ROOT / 'pending.json').unlink(missing_ok=True)
         return {'status': 'rolled-back', 'affected': manifest['affected'],
                 'hostname': urlsplit(previous['redirect_url']).hostname, 'callback': previous['redirect_url']}
     if action == 'commit':
+        # Public TLS verification has passed; rollback no longer needs the frozen snapshot.
+        release_checkpoint()
         # Keep encrypted-at-rest old proxy configurations only for the configured
         # revision count. Docker images are not pruned: rollback must work offline.
         revisions = sorted(p for p in RECORDS.glob('*') if p.is_dir())

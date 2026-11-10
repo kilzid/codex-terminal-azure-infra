@@ -26,7 +26,7 @@ try {
       AUTH_PASSWORD_HASH: authenticated ? await hashPassword('smoke-password') : '' };
     delete env.TMUX; delete env.TMUX_PANE;
     const tmux = (...args) => execFileSync('tmux', args, { env, encoding: 'utf8' }).trim();
-    const child = spawn(process.execPath, [join(root, 'start.mjs')], { env, stdio: 'inherit' });
+    const child = spawn(process.execPath, [process.env.SESSION_LAUNCHER || join(root, 'start.mjs')], { env, stdio: 'inherit' });
     const exit = once(child, 'exit');
     const clients = new Set();
     let cookie = '';
