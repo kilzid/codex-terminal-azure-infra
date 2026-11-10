@@ -72,7 +72,7 @@ class Controller:
                                              self.secrets['clientSecret'], self.secrets['cookieSecret']),
             'Caddyfile': caddy_config(p['hostname'], p['azureHostname'], p['contactEmail']),
             **{n: (ROOT / 'runtime' / n).read_text() for n in ['seccomp.json', 'apparmor.profile',
-                 'network-rules.sh', 'boot-guards.sh', 'codex-config.py', 'docker-daemon.json',
+                 'network-rules.sh', 'boot-guards.sh', 'codex-config.py', 'session-manager.mjs', 'session-hooks.toml', 'docker-daemon.json',
                  'sysctl.conf', 'unattended-upgrades.conf', 'terminal.service']}}
         return {k: base64.b64encode(v.encode()).decode() for k, v in files.items()}
 

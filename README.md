@@ -22,7 +22,7 @@ pip install -r requirements.txt
 ./codex-infra plan --private "$HOME/.local/share/codex-infra/production"
 ```
 
-Changes go through a feature branch and pull request. Merging into `main` automatically tests and deploys the latest desired revision, with no environment reviewer approval. Changes can immediately interrupt active terminal sessions. Workspace files, saved authentication and conversation history remain on disk; reopening conversations is manual.
+Changes go through a feature branch and pull request. Merging into `main` automatically tests and deploys the latest desired revision, with no environment reviewer approval. Changes can immediately interrupt active terminal sessions. Workspace files, saved authentication and conversation history remain on disk. Terminal windows, splits, directories and tracked Codex conversations restore automatically; every automatic resume uses YOLO mode (`--dangerously-bypass-approvals-and-sandbox`) and waits for input. Running commands still stop. After first installation, reopen existing conversations once to enable tracking. See [restoration behavior](docs/operations.md#terminal-restoration).
 
 [Operations and rollback](docs/operations.md), [recovery](docs/recovery.md), [security and privacy](SECURITY.md), and [acceptance testing](docs/acceptance.md) describe the operational contract. A daily check at **02:23 UTC** discovers a new terminal image, opens a digest-only PR, and merges it only after both required checks pass on that exact commit. It then starts the ordinary production deployment and VM verification. Other images and infrastructure remain manual changes.
 

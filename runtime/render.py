@@ -57,8 +57,12 @@ def compose(images, size):
             'terminal': {
                 'image': images['terminal'], 'user': '1000:1000', 'restart': 'unless-stopped',
                 'ports': ['127.0.0.1:7681:7681'],
+                'command': ['node', '/opt/codex-session.mjs'],
+                'stop_grace_period': '30s',
                 'volumes': ['/srv/codex-terminal/workspace:/workspace',
-                            '/srv/codex-terminal/codex-config:/home/node/.codex'],
+                            '/srv/codex-terminal/codex-config:/home/node/.codex',
+                            '/etc/codex-terminal/session-manager.mjs:/opt/codex-session.mjs:ro',
+                            '/etc/codex-terminal/session-hooks.toml:/etc/codex/requirements.toml:ro'],
                 'cap_drop': ['ALL'],
                 'security_opt': ['no-new-privileges:true', 'seccomp=/etc/codex-terminal/seccomp.json',
                                  'apparmor=codex-terminal'],

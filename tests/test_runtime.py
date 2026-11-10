@@ -29,7 +29,9 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(terminal['cap_drop'], ['ALL'])
             self.assertEqual(terminal['ports'], ['127.0.0.1:7681:7681'])
             self.assertEqual(set(terminal['volumes']), {'/srv/codex-terminal/workspace:/workspace',
-                '/srv/codex-terminal/codex-config:/home/node/.codex'})
+                '/srv/codex-terminal/codex-config:/home/node/.codex',
+                '/etc/codex-terminal/session-manager.mjs:/opt/codex-session.mjs:ro',
+                '/etc/codex-terminal/session-hooks.toml:/etc/codex/requirements.toml:ro'})
             self.assertNotIn('environment', terminal)
             self.assertNotIn('network_mode', terminal)
             self.assertIn('no-new-privileges:true', terminal['security_opt'])
@@ -198,3 +200,27 @@ class RuntimeTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     host.apply({**self.payload(),'expectedBefore':host.live_hashes()},files)
                 self.assertTrue((root/'pending.json').exists())
+
+    def test_management_file_changes_recreate_only_terminal(self):
+        for name in ['session-manager.mjs', 'session-hooks.toml']:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory, patch.object(host, 'ROOT', Path(directory)):
+                files = self.files(); self.install(Path(directory), files)
+                files[name] += b'changed\n'
+                self.assertEqual(host.changes(files)['affected'], ['terminal'])
+
+    def test_read_only_management_files_are_readable_by_container_user(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(host, 'ROOT', Path(directory)):
+            for name in ['session-manager.mjs', 'session-hooks.toml']:
+                host.write(name, b'helper')
+                self.assertEqual((Path(directory) / name).stat().st_mode & 0o777, 0o444)
+
+    def test_freeze_streams_helper_for_first_rollout_without_logging_state(self):
+        files = self.files()
+        with patch.object(host, 'inspect', return_value={'terminal': {'State': {'Running': True}}}), patch.object(host, 'compose') as command:
+            host.checkpoint_terminal(files)
+        command.assert_called_once_with('exec', '-T', 'terminal', 'node', '--input-type=module', '-', 'freeze', data=files['session-manager.mjs'])
+
+    def test_compose_always_wraps_launcher_and_allows_graceful_shutdown(self):
+        terminal = compose(self.images, 'Standard_B1ms')['services']['terminal']
+        self.assertEqual(terminal['command'], ['node', '/opt/codex-session.mjs'])
+        self.assertEqual(terminal['stop_grace_period'], '30s')

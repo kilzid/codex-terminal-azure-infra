@@ -1,0 +1,15 @@
+# Infrastructure-owned tracking only. User and project hooks remain enabled.
+[features]
+hooks = true
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "node /opt/codex-session.mjs hook"
+timeout = 3
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "node /opt/codex-session.mjs hook"
+timeout = 3
