@@ -99,10 +99,14 @@ class GitHub:
             if str(error) == 'github-api-404': return None
             raise
 
-    def pages(self, path):
+    def pages(self, path, *, key=None):
         values = []
         for page in range(1, 101):
             rows = self(path + ('&' if '?' in path else '?') + f'per_page=100&page={page}')
+            if key is not None:
+                require(isinstance(rows, dict) and isinstance(rows.get(key), list), 'invalid-paginated-response')
+                rows = rows[key]
+            require(isinstance(rows, list), 'invalid-paginated-response')
             values.extend(rows)
             if len(rows) < 100: return values
         raise UpdateError('pagination-limit-exceeded')
@@ -214,7 +218,7 @@ class Updater:
                 if matching:
                     run = max(matching, key=lambda r: r['id'])
                     if run['status'] == 'completed':
-                        jobs = self.api.pages('/actions/runs/' + str(run['id']) + '/jobs')
+                        jobs = self.api.pages('/actions/runs/' + str(run['id']) + '/jobs', key='jobs')
                         if not passed_jobs(run, jobs, head):
                             self.validation_status(head, 'failure', run['id'])
                             raise UpdateError('image-validation-failed-pr-left-open')

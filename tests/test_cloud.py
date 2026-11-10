@@ -73,3 +73,26 @@ class RunCommandTests(unittest.TestCase):
             protected=cloud.arm.call_args.args[2]['properties']['protectedParameters'][0]['value']
             decoded=json.loads(gzip.decompress(base64.b64decode(protected)))
             self.assertEqual(len(decoded['_runCommandArchive']['records']),3)
+
+
+class CommandDiagnosticsTests(unittest.TestCase):
+    def test_failed_commands_identify_stage_without_exposing_private_output(self):
+        from cloud import command, Failure
+        operations = [(['az', 'backup', 'protection', 'backup-now'], 'azure-backup-trigger-failed'),
+                      (['az', 'backup', 'job', 'show'], 'azure-backup-status-failed'),
+                      (['az', 'deployment', 'group', 'create'], 'azure-infrastructure-deployment-failed'),
+                      (['az', 'vm', 'start'], 'azure-vm-start-failed'),
+                      (['az', 'account', 'show'], 'azure-command-failed'),
+                      (['unknown-command'], 'external-command-failed')]
+        for args, code in operations:
+            with self.subTest(args=args), patch('cloud.subprocess.run', return_value=Mock(
+                    returncode=1, stdout='private output', stderr='private details')):
+                with self.assertRaisesRegex(Failure, '^' + code + '$'):
+                    command(args + ['--private-value', 'synthetic-account'])
+
+    def test_authorization_errors_are_classified_without_printing_resource_ids(self):
+        from cloud import command, Failure
+        with patch('cloud.subprocess.run', return_value=Mock(returncode=1, stdout='',
+                stderr='ERROR: (AuthorizationFailed) private account and resource details')):
+            with self.assertRaisesRegex(Failure, '^azure-backup-trigger-authorization-failed$'):
+                command(['az', 'backup', 'protection', 'backup-now'])
