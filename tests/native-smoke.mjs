@@ -26,6 +26,11 @@ try {
       AUTH_PASSWORD_HASH: authenticated ? await hashPassword('smoke-password') : '' };
     delete env.TMUX; delete env.TMUX_PANE;
     const tmux = (...args) => execFileSync('tmux', args, { env, encoding: 'utf8' }).trim();
+    if (authenticated && process.env.SESSION_LAUNCHER) {
+      tmux('new-session', '-d', '-s', 'main', '-c', '/workspace', '/bin/bash');
+      execFileSync(process.execPath, [process.env.SESSION_LAUNCHER, 'freeze'], { env });
+      tmux('kill-server');
+    }
     const child = spawn(process.execPath, [process.env.SESSION_LAUNCHER || join(root, 'start.mjs')], { env, stdio: 'inherit' });
     const exit = once(child, 'exit');
     const clients = new Set();
