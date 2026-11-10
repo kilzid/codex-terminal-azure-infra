@@ -26,6 +26,9 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     assert.equal(get(pane, '@codex_session'), 'session_exact');
     manager.hook({ hook_event_name: 'SessionEnd', session_id: 'old_session' });
     assert.equal(get(pane, '@codex_session'), 'session_exact');
+    manager.hook({ hook_event_name: 'SessionEnd', session_id: 'session_exact' });
+    assert.equal(get(pane, '@codex_session'), '');
+    manager.hook({ hook_event_name: 'SessionStart', session_id: 'session_exact' }, pid);
     manager.checkpoint();
     const file = path.join(state, 'checkpoint.json');
     const saved = JSON.parse(fs.readFileSync(file));
@@ -53,7 +56,9 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     await sleep(300);
     assert.equal(tmux('list-windows', '-t', 'main', '-F', '#{window_index}:#{window_name}'), '0:first window\n4:fourth');
     assert.equal(get('main:0', 'window_panes'), '2');
-    assert.equal(get('main:4', 'pane_current_path'), '/workspace');
+    assert.equal(get('main:0', 'window_layout'), saved.windows[0].layout);
+    // Hosted CI has no /workspace; tmux falls back to HOME there. Production always mounts it.
+    assert.equal(get('main:4', 'pane_current_path'), fs.existsSync('/workspace') ? '/workspace' : os.homedir());
     assert.equal(get('main', 'window_index'), '0');
     assert.match(tmux('capture-pane', '-p', '-t', 'main:0.0'), /shell\s+is ready/);
     assert.deepEqual(fs.readFileSync(path.join(root, 'resumes'), 'utf8').trim().split('\n'), manager.resumeArgs('session_exact'));
