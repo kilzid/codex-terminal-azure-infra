@@ -93,6 +93,22 @@ class RuntimeTests(unittest.TestCase):
             result = host.changes(files)
             self.assertEqual(result['changed'],['compose.json'])
             self.assertEqual(result['affected'],['terminal'])
+            self.assertTrue(result['terminalImageOnly'])
+
+    def test_non_image_changes_and_other_service_drift_require_backup(self):
+        for change in ['limits', 'mounts', 'auth-image', 'host-file', 'auth-drift']:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(host,'ROOT',Path(directory)):
+                files = self.files(); self.install(Path(directory),files)
+                updated = json.loads(files['compose.json'])
+                updated['services']['terminal']['image'] = 'synthetic@sha256:' + 'f'*64
+                if change == 'limits': updated['services']['terminal']['cpus'] = 1.5
+                if change == 'mounts': updated['services']['terminal']['volumes'].append('/test:/test')
+                if change == 'auth-image': updated['services']['auth']['image'] = 'synthetic-new-auth'
+                if change == 'host-file': files['seccomp.json'] = b'{}'
+                files['compose.json'] = json.dumps(updated).encode()
+                with patch.object(host,'service_drift',return_value=['auth'] if change == 'auth-drift' else ['terminal']):
+                    self.assertFalse(host.changes(files)['terminalImageOnly'])
 
     def test_failed_image_restores_configuration_without_restoring_data(self):
         files = self.files()
