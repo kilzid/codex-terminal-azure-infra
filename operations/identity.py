@@ -131,6 +131,8 @@ def bootstrap(directory, *, publish=True):
     repo = gh('repos/' + p['repository'])
     p.update(repository_binding(repo, p['repository']))
     gh('repos/' + p['repository'], 'PATCH', {'allow_rebase_merge': True, 'allow_merge_commit': False, 'allow_squash_merge': False})
+    gh('repos/' + p['repository'] + '/actions/permissions/workflow', 'PUT', {
+        'default_workflow_permissions': 'read', 'can_approve_pull_request_reviews': True})
     gh('repos/' + p['repository'] + '/branches/main/protection', 'PUT', {
         'required_status_checks': {'strict': True, 'contexts': ['validate', 'container-policies']},
         'enforce_admins': True, 'required_linear_history': True,
