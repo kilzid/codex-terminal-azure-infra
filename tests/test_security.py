@@ -1,7 +1,10 @@
 import base64
+import ast
+import fnmatch
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -51,6 +54,19 @@ class SecurityTests(unittest.TestCase):
 
     def test_oidc_trust_binds_immutable_repository_environment_and_main(self):
         self.assertEqual(oidc_subject(1,2),'repository_id:1:repository_owner_id:2:environment:production:ref:refs/heads/main')
+
+    def test_runtime_role_covers_every_declared_infrastructure_resource_write(self):
+        tree=ast.parse((ROOT/'operations/identity.py').read_text())
+        grant=next(node for node in ast.walk(tree) if isinstance(node,ast.Call) and
+                   isinstance(node.func,ast.Name) and node.func.id=='grant_role' and
+                   len(node.args)==5 and ast.literal_eval(node.args[3])=='runtime')
+        actions=ast.literal_eval(grant.args[4])
+        for template in (ROOT/'infra').glob('*.bicep'):
+            for resource in re.finditer(r"resource\s+\w+\s+'([^'@]+)@[^']+'\s*(existing)?",template.read_text()):
+                if resource[2]:continue
+                required=resource[1]+'/write'
+                with self.subTest(resource=required):
+                    self.assertTrue(any(fnmatch.fnmatchcase(required.lower(),action.lower()) for action in actions),required)
 
     def test_scanner_rejects_personal_inputs_history_credentials_and_public_ips(self):
         for data in [('gh'+'p_')+'a'*36,str(uuid.uuid4()),'person'+'@'+'private.invalid','203'+'.1.2.3']:

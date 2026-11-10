@@ -212,6 +212,7 @@ def bootstrap(directory, *, publish=True):
         'Microsoft.Network/networkSecurityGroups/join/action', 'Microsoft.Network/networkInterfaces/write',
         'Microsoft.Network/networkInterfaces/join/action', 'Microsoft.Network/publicIPAddresses/write', 'Microsoft.Network/publicIPAddresses/join/action',
         'Microsoft.RecoveryServices/vaults/write', 'Microsoft.RecoveryServices/vaults/backupPolicies/write',
+        'Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/write',
         'Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems/write',
         'Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems/backup/action',
         'Microsoft.Insights/actionGroups/write', 'Microsoft.Insights/metricAlerts/write',
