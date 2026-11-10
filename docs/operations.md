@@ -4,9 +4,20 @@ All commands use `./codex-infra COMMAND --private /absolute/private/directory`. 
 
 `apply` reads actual infrastructure and managed host files, calculates differences, completes a VM backup before disruptive changes, retains previous runtime configuration and applies only changed components. No-op applications do not rotate credentials, recreate containers or rewrite equivalent configuration. The applied Git commit, lockfile and private configuration fingerprint are stored root-only on the VM. Scheduling runs verification, never automatic adoption of drift.
 
-Pull requests use rebase merge so the checked source author identities are preserved. Keep source branches current with main and use no-reply author emails.
+Keep source branches current with main and use no-reply author and committer emails. GitHub's web rebase merge rewrites committer metadata using the merging account; it is suitable only when that account's GitHub commit email is no-reply. See the procedure below when keeping account settings unchanged.
 
 The production workflow uses a non-cancelling concurrency group with GitHub's buffered queue, so scheduled verification cannot replace a pending deployment. When it obtains the lock it checks out current `main` and runs validation and container tests against that actual revision. A queued old workflow therefore reconciles the latest desired revision. No PR, fork PR or feature branch can enter the production environment or obtain its Azure identity.
+
+## Merging with account settings unchanged
+
+An explicitly authorized administrator merge can fast-forward the exact checked PR head without generating new commit metadata. This is a merge operation, separate from deployment; bootstrap and apply never merge PRs or relax branch protection.
+
+1. Confirm the PR is reviewed, current with main and all required checks passed on its exact head. Fetch both refs in a clean clone, run the privacy/history scan and record the reviewed head and current main SHA privately. `git merge-base --is-ancestor origin/main REVIEWED_HEAD` must succeed.
+2. Save the current main protection configuration outside the checkout. Temporarily grant only the named merging administrator a pull-request bypass in the repository's branch protection. Keep required status checks, strict freshness, linear history and force-push/deletion restrictions enabled. Do not remove protection or change account-wide settings.
+3. Push only the checked head with `git push origin REVIEWED_HEAD:refs/heads/main`. This must be an ordinary fast-forward push; never use force. A changed main, failed check or rejected push requires re-review rather than weakening a check.
+4. Restore the exact prior bypass configuration immediately, including after a failed push. Verify the PR is marked merged, main points to the reviewed commit and production CI starts. Retain the protection record privately.
+
+This preserves both source author and committer emails and triggers the ordinary main-push deployment. If you cannot obtain a narrowly scoped administrator bypass, leave the PR unmerged until an authorized merger with a no-reply GitHub commit identity is available. Never silently accept personal commit metadata or disable the privacy check to deploy.
 
 ## Image updates
 
