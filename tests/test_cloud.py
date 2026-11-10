@@ -96,3 +96,71 @@ class CommandDiagnosticsTests(unittest.TestCase):
                 stderr='ERROR: (AuthorizationFailed) private account and resource details')):
             with self.assertRaisesRegex(Failure, '^azure-backup-trigger-authorization-failed$'):
                 command(['az', 'backup', 'protection', 'backup-now'])
+
+
+class WorkloadRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.private = {'repositoryId': 1, 'repositoryOwnerId': 2, 'deploymentClientId': 'synthetic-client',
+                        'tenantId': 'synthetic-tenant', 'subscriptionId': 'synthetic-subscription',
+                        'resourceGroup': 'synthetic-group', 'resources': {'vaultName': 'synthetic-vault',
+                        'backupContainer': 'synthetic-container', 'backupItem': 'synthetic-item'}}
+        self.env = {'GITHUB_ACTIONS': 'true', 'ACTIONS_ID_TOKEN_REQUEST_URL':
+                    'https://pipelines.actions.githubusercontent.com/idtoken?audience=old',
+                    'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-bearer'}
+        self.identity = {'iss': 'https://token.actions.githubusercontent.com', 'aud': 'api://AzureADTokenExchange',
+                         'sub': 'repository_id:1:repository_owner_id:2:environment:production:ref:refs/heads/main'}
+        def token(c):
+            part = base64.urlsafe_b64encode(json.dumps(c).encode()).decode().rstrip('=')
+            return 'header.' + part + '.signature'
+        self.assertion = token(self.identity)
+
+    def test_expired_assertion_has_a_specific_public_code(self):
+        from cloud import command, Failure
+        with patch('cloud.subprocess.run', return_value=Mock(returncode=1, stdout='',
+                stderr='AADSTS700024: private assertion and account details')):
+            with self.assertRaisesRegex(Failure, '^azure-command-assertion-expired$'):
+                command(['az', 'account', 'get-access-token'])
+
+    def test_oidc_is_reacquired_after_interval_and_cached_audience_tokens_are_cleared(self):
+        cloud = Cloud(self.private)
+        with patch.dict('os.environ', self.env), patch('cloud.request', return_value={'value': self.assertion}) as req, \
+             patch('cloud.az') as az, patch('cloud.time.monotonic', side_effect=[0, 299, 301, 302]):
+            cloud.refresh_workload_login()
+            cloud.tokens['cached'] = 'old-access-token'
+            cloud.refresh_workload_login()
+            self.assertEqual(cloud.tokens['cached'], 'old-access-token')
+            cloud.refresh_workload_login()
+            self.assertEqual(cloud.tokens, {})
+            cloud.refresh_workload_login(force=True)
+        self.assertEqual(req.call_count, 3)
+        self.assertEqual(az.call_count, 3)
+        self.assertTrue(req.call_args.args[0].endswith('audience=api%3A%2F%2FAzureADTokenExchange'))
+        self.assertEqual(req.call_args.kwargs, {'token': 'synthetic-bearer'})
+        self.assertEqual(az.call_args.args[:3], ('login', '--service-principal', '--username'))
+        self.assertIn(self.assertion, az.call_args.args)
+
+    def test_other_identity_and_untrusted_token_endpoint_are_rejected_before_login(self):
+        from cloud import Failure
+        cloud = Cloud(self.private)
+        with patch.dict('os.environ', self.env), patch('cloud.request', return_value={'value': self.assertion}), \
+             patch('cloud.claims', return_value={**self.identity, 'sub': 'other-repository'}), patch('cloud.az') as az:
+            with self.assertRaisesRegex(Failure, 'github-oidc-identity-mismatch'): cloud.refresh_workload_login()
+            az.assert_not_called()
+        with patch.dict('os.environ', {**self.env, 'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://example.com/token'}), \
+             patch('cloud.request') as req:
+            with self.assertRaisesRegex(Failure, 'github-oidc-request-unavailable'): cloud.refresh_workload_login()
+            req.assert_not_called()
+
+    def test_local_administrator_does_not_use_github_login(self):
+        with patch.dict('os.environ', {'GITHUB_ACTIONS': 'false'}), patch('cloud.request') as req, patch('cloud.az') as az:
+            Cloud(self.private).refresh_workload_login(force=True)
+            req.assert_not_called(); az.assert_not_called()
+
+    def test_backup_refreshes_during_polling_and_before_followup_operations(self):
+        cloud = Cloud(self.private)
+        cloud.refresh_workload_login = Mock()
+        with patch('cloud.az', side_effect=[{'name': 'synthetic-job'},
+                {'properties': {'status': 'InProgress'}}, {'properties': {'status': 'Completed'}}]), patch('cloud.time.sleep'):
+            cloud.backup(7)
+        self.assertEqual(cloud.refresh_workload_login.call_count, 4)
+        cloud.refresh_workload_login.assert_called_with(force=True)

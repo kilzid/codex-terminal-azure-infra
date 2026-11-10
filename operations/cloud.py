@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 ARM = 'https://management.azure.com'
 GRAPH = 'https://graph.microsoft.com/v1.0/'
@@ -41,7 +42,8 @@ def command(args, *, data=None, json_output=True):
                      'azure-command' if args and args[0] == 'az' else 'external-command')
         # Only these public service codes may be reflected in the fixed error code.
         denied = re.search(r'\((?:AuthorizationFailed|LinkedAuthorizationFailed|Forbidden)\)', result.stderr or '')
-        raise Failure(stage + ('-authorization-failed' if denied else '-failed'))
+        expired = 'AADSTS700024' in (result.stderr or '')
+        raise Failure(stage + ('-assertion-expired' if expired else '-authorization-failed' if denied else '-failed'))
     return json.loads(result.stdout) if json_output and result.stdout.strip() else result.stdout
 
 
@@ -233,9 +235,40 @@ _co.environ['CODEX_VM_PAYLOAD'] = _cb.b64encode(_cj.dumps(_dp).encode()).decode(
             time.sleep(5)
         raise Failure('host-operation-timeout')
 
+    def refresh_workload_login(self, *, force=False):
+        # Azure CLI retains the original short-lived GitHub assertion. A long backup
+        # can outlive the ARM access token, so obtain a fresh assertion while polling.
+        if os.environ.get('GITHUB_ACTIONS') != 'true': return
+        now = time.monotonic()
+        previous = getattr(self, 'workload_login_at', None)
+        if not force and previous is not None and now - previous < 300: return
+        url = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL', '')
+        bearer = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_TOKEN', '')
+        parsed = urllib.parse.urlsplit(url)
+        require(parsed.scheme == 'https' and parsed.hostname and
+                parsed.hostname.endswith('.actions.githubusercontent.com') and
+                not parsed.username and not parsed.password and parsed.port in [None, 443] and bearer,
+                'github-oidc-request-unavailable')
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        query = [(k, v) for k, v in query if k != 'audience'] + [('audience', 'api://AzureADTokenExchange')]
+        url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+        assertion = request(url, token=bearer)['value']
+        c = claims(assertion)
+        p = self.private
+        subject = ('repository_id:' + str(p['repositoryId']) + ':repository_owner_id:' +
+                   str(p['repositoryOwnerId']) + ':environment:production:ref:refs/heads/main')
+        require(c.get('iss') == 'https://token.actions.githubusercontent.com' and
+                c.get('aud') == 'api://AzureADTokenExchange' and c.get('sub') == subject,
+                'github-oidc-identity-mismatch')
+        az('login', '--service-principal', '--username', p['deploymentClientId'], '--tenant', p['tenantId'],
+           '--federated-token', assertion, '--allow-no-subscriptions')
+        self.tokens.clear()
+        self.workload_login_at = now
+
     def backup(self, retention_days):
         p = self.private
         until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=retention_days)).strftime('%d-%m-%Y')
+        self.refresh_workload_login()
         result = az('backup', 'protection', 'backup-now', '--resource-group', p['resourceGroup'],
                     '--vault-name', p['resources']['vaultName'], '--container-name', p['resources']['backupContainer'],
                     '--item-name', p['resources']['backupItem'], '--backup-management-type', 'AzureIaasVM',
@@ -244,10 +277,14 @@ _co.environ['CODEX_VM_PAYLOAD'] = _cb.b64encode(_cj.dumps(_dp).encode()).decode(
         require(job_id, 'backup-job-missing')
         deadline = time.monotonic() + 3600
         while time.monotonic() < deadline:
+            self.refresh_workload_login()
             job = az('backup', 'job', 'show', '--resource-group', p['resourceGroup'], '--vault-name', p['resources']['vaultName'],
                      '--name', job_id, '--subscription', p['subscriptionId'])
             status = job['properties']['status']
-            if status == 'Completed': return
+            if status == 'Completed':
+                # Subsequent ARM/Graph/CLI operations also need a fresh login.
+                self.refresh_workload_login(force=True)
+                return
             require(status in ['InProgress', 'Pending'], 'backup-failed')
             time.sleep(20)
         raise Failure('backup-timeout-no-mutation-performed')
