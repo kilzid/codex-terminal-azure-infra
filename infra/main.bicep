@@ -14,6 +14,12 @@ param cpuCredits int = 10
 param auditDays int = 30
 @secure()
 param ownerObjectId string
+param storageEndpointLocations array = [location]
+param fileBackupItemNames array = []
+@secure()
+param workspaceMetadata object = {}
+@secure()
+param configMetadata object = {}
 @secure()
 param contactEmail string
 
@@ -22,7 +28,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: '${prefix}-vm-vnet'
   location: location
   tags: tags
-  properties: { addressSpace: { addressPrefixes: ['10.74.0.0/16'] } }
+  properties: { addressSpace: { addressPrefixes: ['10.74.0.0/16'] }, privateEndpointVNetPolicies: 'Disabled' }
 }
 resource firewall 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
   name: '${prefix}-vm-nsg'
@@ -40,18 +46,20 @@ resource subnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   properties: {
     addressPrefix: '10.74.0.0/24'
     networkSecurityGroup: { id: firewall.id }
+    privateEndpointNetworkPolicies: 'Disabled'
     defaultOutboundAccess: false
-    serviceEndpoints: retainedRecovery ? [{ service: 'Microsoft.Storage', locations: [location] }] : []
+    serviceEndpoints: retainedRecovery ? [{ service: 'Microsoft.Storage', locations: storageEndpointLocations }] : []
   }
 }
 resource address 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
   name: '${prefix}-vm-ip'
   location: location
   tags: tags
-  sku: { name: 'Standard' }
+  sku: { name: 'Standard', tier: 'Regional' }
   properties: {
     publicIPAllocationMethod: 'Static'
     publicIPAddressVersion: 'IPv4'
+    ddosSettings: { protectionMode: 'VirtualNetworkInherited' }
     dnsSettings: { domainNameLabel: '${prefix}-${uniqueString(resourceGroup().id)}' }
   }
 }
@@ -61,8 +69,12 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
   tags: tags
   properties: {
     enableIPForwarding: false
+    auxiliaryMode: 'None'
+    auxiliarySku: 'None'
+    disableTcpStateTracking: false
     ipConfigurations: [{ name: 'primary', properties: {
       privateIPAllocationMethod: 'Dynamic'
+      privateIPAddressVersion: 'IPv4'
       subnet: { id: subnet.id }
       publicIPAddress: { id: address.id }
     } }]
@@ -116,7 +128,7 @@ param recoveryStorageName string = ''
 param auditWorkspaceName string = ''
 module retained './retained-recovery.bicep' = if (retainedRecovery) {
   name: '${prefix}-retained-recovery'
-  params: { location: location, storageName: recoveryStorageName, fileShareBackups: fileShareBackups, prefix: prefix, ownerObjectId: ownerObjectId, dailyRetentionDays: dailyRetentionDays }
+  params: { location: location, storageName: recoveryStorageName, fileShareBackups: fileShareBackups, prefix: prefix, ownerObjectId: ownerObjectId, dailyRetentionDays: dailyRetentionDays, fileBackupItemNames: fileBackupItemNames, workspaceMetadata: workspaceMetadata, configMetadata: configMetadata }
 }
 module audit './audit.bicep' = if (auditLogging) {
   name: '${prefix}-audit'

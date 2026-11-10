@@ -65,7 +65,8 @@ def adopt(ctl):
     if ctl.secrets is None: import_runtime_secrets(ctl)
     vm, ip = ctl.actual_infrastructure()
     plan = ctl.plan()
-    require(not plan['host']['changed'] and not plan['callbackChanged'] and not plan['budgetChanged'], 'adoption-would-change-live-configuration')
+    management_additions = [n for n in plan['host']['changed'] if n == 'codex-config.py' and n not in plan['host']['before']]
+    require(set(plan['host']['changed']) == set(management_additions) and not plan['host'].get('serviceDrift') and not plan['callbackChanged'] and not plan['budgetChanged'], 'adoption-would-change-live-configuration')
     require(not plan['infrastructure'], 'adoption-infrastructure-mismatch')
     ctl.public_verify()
     result = ctl.host('adopt')
@@ -73,7 +74,8 @@ def adopt(ctl):
         'diskId': vm['properties']['storageProfile']['osDisk']['managedDisk']['id'], 'ipId': ip['id'],
         'ipAddress': ip['properties']['ipAddress'], 'containers': result['containers'], 'commit': ctl.commit})
     publish_secrets(ctl.directory, ctl.private)
-    return {'status': 'adopted', 'changedFiles': 0, 'affectedServices': []}
+    return {'status': 'adopted', 'functionalChanges': 0, 'affectedServices': [],
+            'managementFilesAdded': result.get('managementFilesAdded', [])}
 
 
 def fresh(ctl, *, publish=True):
@@ -119,5 +121,6 @@ def fresh(ctl, *, publish=True):
             if time.monotonic() >= deadline: raise
             time.sleep(5)
     ctl.actual_infrastructure()
+    ctl.host('verify')
     if publish: publish_secrets(ctl.directory, p)
     return {'status': 'fresh-install-complete', 'affectedServices': result['affected']}

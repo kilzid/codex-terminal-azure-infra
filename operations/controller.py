@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 from jsonschema import Draft202012Validator, FormatChecker
+from preview import meaningful_changes
 from cloud import Cloud, Failure, atomic, az, command, gh, require
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,11 +93,21 @@ class Controller:
         p, s = self.private, self.settings
         optional = s['optional']
         require(not optional['fileShareBackups'] or optional['retainedRecovery'], 'file-share-backups-require-retained-storage')
+        if optional['fileShareBackups']: require(p['resources'].get('fileBackupItemNames'), 'existing-file-backup-mappings-required')
         if optional['retainedRecovery']: require(p['resources'].get('recoveryStorageName'), 'recovery-storage-mapping-required')
         if optional['auditLogging']: require(p['resources'].get('auditWorkspaceName'), 'audit-workspace-mapping-required')
+        metadata = {}
+        if optional['retainedRecovery']:
+            storage = self.cloud.rg + '/providers/Microsoft.Storage/storageAccounts/' + p['resources']['recoveryStorageName']
+            for share, key in [('workspace', 'workspaceMetadata'), ('codex-config', 'configMetadata')]:
+                value = self.cloud.arm(storage + '/fileServices/default/shares/' + share, api='2024-01-01')['properties'].get('metadata') or {}
+                require(all(k.lower().startswith('azurebackup') for k in value), 'unmanaged-recovery-share-metadata')
+                metadata[key] = value
         return {'location': p['location'], 'prefix': p['prefix'], 'vmSize': s['vmSize'],
                 'adminPublicKey': p['adminPublicKey'], 'contactEmail': p['contactEmail'], 'ownerObjectId': p['userObjectId'],
-                'imageVersion': self.images['os']['version'],
+                'imageVersion': self.images['os']['version'], **metadata,
+                'storageEndpointLocations': p['resources'].get('storageEndpointLocations', [p['location']]),
+                'fileBackupItemNames': p['resources'].get('fileBackupItemNames', []),
                 'dailyRetentionDays': s['backup']['dailyRetentionDays'], 'instantRetentionDays': s['backup']['instantRetentionDays'],
                 'memoryPercent': s['monitor']['memoryPercent'], 'cpuCredits': s['monitor']['cpuCredits'],
                 'auditDays': s['retention']['auditDays'],
@@ -113,7 +124,7 @@ class Controller:
             args = ['deployment', 'group', operation, '--name', 'codex-infra', '--resource-group', p['resourceGroup'],
                     '--template-file', str(ROOT / 'infra/main.bicep'), '--parameters', '@' + filename,
                     '--subscription', p['subscriptionId'], '--mode', 'Incremental']
-            if operation == 'what-if': args += ['--result-format', 'FullResourcePayloads']
+            if operation == 'what-if': args += ['--result-format', 'FullResourcePayloads', '--no-pretty-print']
             result = az(*args)
             if operation == 'what-if': atomic(self.directory / 'what-if.json', result)
             return result
@@ -123,12 +134,12 @@ class Controller:
     def infrastructure_plan(self):
         result = self.deployment('what-if')
         require(result.get('status') == 'Succeeded', 'infrastructure-preview-failed')
-        changes = [v for v in result.get('changes', []) if v.get('changeType') not in ['NoChange', 'Ignore']]
+        changes = meaningful_changes(result, self.parameters())
         # Incremental deployments plus restricted RBAC never delete retained resources.
         require(all(v.get('changeType') in ['Create', 'Modify', 'Deploy'] for v in changes), 'destructive-infrastructure-plan-rejected')
         for item in changes:
             if item.get('resourceId', '').lower() == self.cloud.vm.lower() and item.get('changeType') != 'Create':
-                for delta in item.get('delta', []):
+                for delta in item.get('delta') or []:
                     path = delta.get('path', '').lower()
                     require(not any(x in path for x in ['storageprofile', 'osprofile', 'networkprofile', 'location']), 'vm-replacement-or-immutable-change-rejected')
         return changes
@@ -219,13 +230,28 @@ class Controller:
         atomic(self.directory / 'plan.json', result)
         return result
 
+    def apply_infrastructure(self):
+        machine = self.cloud.arm(self.cloud.vm)
+        previous = machine['properties']['hardwareProfile']['vmSize']
+        resizing = previous != self.settings['vmSize']
+        args = ['--ids', self.cloud.vm, '--subscription', self.private['subscriptionId']]
+        if resizing: az('vm', 'deallocate', *args)
+        try:
+            self.deployment('create')
+            if resizing: az('vm', 'start', *args)
+        except Exception:
+            if resizing:
+                az('vm', 'resize', *args, '--size', previous)
+                az('vm', 'start', *args)
+            raise
+
     def apply(self):
         plan = self.plan()
         # First adoption is a separately verified no-op, never an implicit reconcile.
         require(plan['host'].get('applied') is not None or self.private['profile'] == 'deployment', 'adoption-required-before-apply')
-        disruptive = plan['infrastructure'] or plan['host']['changed'] or plan['callbackChanged']
+        disruptive = plan['infrastructure'] or plan['host']['changed'] or plan['host'].get('serviceDrift') or plan['callbackChanged']
         if disruptive: self.cloud.backup(self.settings['backup']['dailyRetentionDays'])
-        if plan['infrastructure']: self.deployment('create')
+        if plan['infrastructure']: self.apply_infrastructure()
         if plan['budgetChanged']: self.cloud.arm(self.budget_path, 'PUT', {'properties': self.desired_budget()}, api='2024-08-01')
         app = self.cloud.identity()
         web = app['web']
@@ -245,7 +271,7 @@ class Controller:
             self.host('commit')
             self.expire_run_commands()
         except Exception:
-            if result and result.get('revision'): self.host('rollback', revision=result['revision'])
+            if result and result.get('revision'): self.host('rollback', revision=result['revision'], automaticRollback=True)
             if plan['callbackChanged']:
                 self.cloud.graph('applications/' + self.private['runtimeApplicationObjectId'], 'PATCH', {'web': web})
             raise
@@ -286,7 +312,7 @@ class Controller:
         new = self.cloud.graph('applications/' + self.private['runtimeApplicationObjectId'] + '/addPassword', 'POST',
                                {'passwordCredential': {'displayName': 'codex-terminal-runtime', 'endDateTime': expiry.isoformat()}})
         self.secrets = {**previous, 'clientSecret': new['secretText'], 'keyId': new['keyId'], 'expiresAt': expiry.isoformat()}
-        atomic(self.directory / 'rotation-pending.json', self.secrets)
+        atomic(self.directory / 'rotation-pending.json', {'previousKeyId': previous['keyId'], 'replacement': self.secrets})
         try:
             self.apply()
             self.public_verify()

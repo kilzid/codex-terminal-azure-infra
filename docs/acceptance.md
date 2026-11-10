@@ -22,3 +22,19 @@ Before initial rollout, record the following evidence privately and publish only
 Do not describe a skipped cloud or interactive test as passed. Automated public health checks verify protection and redirects; owner MFA sign-in and reopening a saved conversation require an interactive user check. Keep raw cloud state, backup IDs, host hashes, browser cookies and logs out of public PRs, workflow artifacts and summaries.
 
 The initial PR activates deployment only when merged. Do not merge until its published validation and privately retained rollout evidence support the intended production adoption. Permanent cleanup is outside the automatic deployment path.
+
+The administrator-only `operations/acceptance.py` performs the isolated fault and restore exercise after a clean-clone fresh deployment. Tag that temporary resource group with `purpose=codex-infra-acceptance` and use its separate private directory:
+
+```sh
+python3 operations/acceptance.py --private /absolute/private/isolated-test
+```
+
+It completes a backup, writes newer data, substitutes a deliberately incompatible terminal image through the host transaction, verifies rollback and unchanged auth/TLS containers, restores the backup's OS disk into a separate tagged group, attaches it only as a data disk and checks workspace/history markers read-only. It refuses the adopted profile and resource groups without the explicit test tag. Synthetic test contents and all backup/restore identifiers stay private.
+
+Explicit cleanup is a separate administrator operation:
+
+```sh
+python3 operations/acceptance.py --cleanup --private /absolute/private/isolated-test
+```
+
+It removes test compute, disks and networking, while retaining the vault's enforced fourteen-day backup soft deletion. Its private cleanup record states when that retained vault can be reviewed for final removal. It never deletes the subscription's shared Azure Backup snapshot resource group. Normal reconciliation has no permission to perform this cleanup.

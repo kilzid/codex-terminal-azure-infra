@@ -164,7 +164,11 @@ class Cloud:
             view = value.get('properties', {}).get('instanceView', {})
             status = view.get('executionState')
             if status in ['Succeeded', 'Failed', 'Canceled', 'TimedOut']:
-                require(status == 'Succeeded' and view.get('exitCode') == 0, 'host-operation-failed')
+                if status != 'Succeeded' or view.get('exitCode') != 0:
+                    match = re.search(r'CODEX_OPERATION_FAILED:([a-z-]+):([A-Za-z]+)', view.get('error', ''))
+                    allowed = ['protocol', 'plan', 'os-readiness', 'pull-images', 'install-configuration', 'start-services', 'verify-runtime', 'verify-services', 'verify-identity', 'verify-metadata', 'verify-sandbox', 'verify-native', 'native-http', 'native-origin', 'native-create-session', 'native-websocket', 'native-attach', 'native-command', 'adopt', 'apply', 'verify', 'rollback', 'commit']
+                    phase = match[1] if match and match[1] in allowed else 'operation'
+                    raise Failure('host-' + phase + '-failed')
                 match = re.search(r'^CODEX_RESULT=([A-Za-z0-9+/=]+)$', view.get('output', ''), re.M)
                 require(match, 'host-protocol-invalid')
                 return json.loads(base64.b64decode(match[1], validate=True))

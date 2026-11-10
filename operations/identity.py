@@ -59,7 +59,10 @@ def local_policy_reader(cloud):
         cloud.graph(app_path, 'PATCH', {'keyCredentials': existing + [credential]})
         old_reader = getattr(cloud, 'policy_token', None)
         try:
+            cached_token = None
             def token():
+                nonlocal cached_token
+                if cached_token and claims(cached_token).get('exp', 0) > time.time() + 60: return cached_token
                 endpoint = 'https://login.microsoftonline.com/' + p['tenantId'] + '/oauth2/v2.0/token'
                 header = {'alg': 'RS256', 'typ': 'JWT', 'x5t': b64url(hashlib.sha1(der.read_bytes()).digest())}
                 timestamp = int(time.time())
@@ -85,6 +88,7 @@ def local_policy_reader(cloud):
                 require(c['tid'] == p['tenantId'] and c['oid'] == p['deploymentObjectId'] and
                         c.get('appid', c.get('azp')) == p['deploymentClientId'], 'policy-reader-identity-mismatch')
                 require('Policy.Read.All' in c.get('roles', []), 'policy-permission-not-propagated')
+                cached_token = value
                 return value
             cloud.policy_token = token
             yield

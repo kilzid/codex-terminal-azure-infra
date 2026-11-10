@@ -19,6 +19,7 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.images = json.loads((ROOT / 'images.lock.json').read_text())
         self.ownership = patch.object(host.os, 'fchown').start()
+        self.drift = patch.object(host, 'service_drift', return_value=[]).start()
         self.addCleanup(patch.stopall)
 
     def test_terminal_has_no_credentials_and_only_persistent_data_mounts(self):
@@ -132,3 +133,37 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(Exception):validate(invalid,'images')
         deployment=json.loads((ROOT/'config/deployment.json').read_text())
         with self.assertRaises(Exception):validate({**deployment,'contactEmail':'owner@example.com'},'deployment')
+
+    def test_adoption_adds_only_absent_inert_helper_without_running_it(self):
+        files=self.files()
+        defaults='sqlite_home = "/home/node/.codex/sqlite"\nsandbox_mode = "workspace-write"\napproval_policy = "on-request"\ncli_auth_credentials_store = "file"\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.install(root,files);(root/'codex-config.py').unlink()
+            original_read=Path.read_text
+            def read(path,*args,**kwargs):
+                if str(path)=='/srv/codex-terminal/codex-config/config.toml':return defaults
+                return original_read(path,*args,**kwargs)
+            payload={**self.payload(),'action':'adopt','files':{k:base64.b64encode(v).decode() for k,v in files.items()}}
+            with patch.object(host,'ROOT',root),patch.object(Path,'read_text',new=read), \
+                 patch.object(host,'verify',return_value={'terminal':'same','auth':'same','https':'same'}), \
+                 patch.object(host,'run') as run,patch.object(host,'compose') as compose_run:
+                result=host.main(payload)
+                self.assertEqual(result['managementFilesAdded'],['codex-config.py'])
+                self.assertEqual(result['affected'],[])
+                self.assertEqual((root/'codex-config.py').read_bytes(),files['codex-config.py'])
+                run.assert_not_called();compose_run.assert_not_called()
+
+    def test_explicit_rollback_preserves_active_credentials_after_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);revision=root/'revision';revision.mkdir()
+            current=proxy_config('tenant','client','owner','current.example.com','active-credential','active-cookie')
+            previous=proxy_config('tenant','client','owner','previous.example.com','revoked-credential','old-cookie')
+            (root/'oauth2-proxy.cfg').write_text(current)
+            (revision/'oauth2-proxy.cfg').write_text(previous)
+            (revision/'manifest.json').write_text(json.dumps({'changed':['oauth2-proxy.cfg'],'affected':['auth']}))
+            with patch.object(host,'ROOT',root),patch.object(host,'compose'):
+                host.restore(revision,preserve_active_credentials=True)
+            restored=tomllib.loads((root/'oauth2-proxy.cfg').read_text())
+            self.assertEqual(restored['client_secret'],'active-credential')
+            self.assertEqual(restored['cookie_secret'],'active-cookie')
+            self.assertEqual(restored['redirect_url'],'https://previous.example.com/oauth2/callback')

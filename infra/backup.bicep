@@ -11,7 +11,11 @@ resource vault 'Microsoft.RecoveryServices/vaults@2024-04-01' = {
   location: location
   tags: tags
   sku: { name: 'RS0', tier: 'Standard' }
-  properties: { publicNetworkAccess: 'Enabled' }
+  properties: {
+    publicNetworkAccess: 'Enabled'
+    restoreSettings: { crossSubscriptionRestoreSettings: { crossSubscriptionRestoreState: 'Enabled' } }
+    securitySettings: { softDeleteSettings: { enhancedSecurityState: 'Enabled', softDeleteRetentionPeriodInDays: 14, softDeleteState: 'Enabled' } }
+  }
 }
 resource policy 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' = {
   parent: vault
@@ -23,6 +27,7 @@ resource policy 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' = 
     schedulePolicy: {
       schedulePolicyType: 'SimpleSchedulePolicy'
       scheduleRunFrequency: 'Daily'
+      scheduleWeeklyFrequency: 0
       scheduleRunTimes: ['2020-01-01T03:00:00Z']
     }
     retentionPolicy: {

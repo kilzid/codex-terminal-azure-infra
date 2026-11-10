@@ -34,11 +34,16 @@ OS_FILES = {'docker-daemon.json': '/etc/docker/daemon.json',
 def target(name):
     return Path(OS_FILES[name]) if name in OS_FILES else ROOT / name
 SERVICES = ('terminal', 'auth', 'https')
+PHASE = 'protocol'
 
 
 def run(argv, *, data=None, timeout=600):
     result = subprocess.run(argv, input=data, capture_output=True, timeout=timeout)
     if result.returncode:
+        global PHASE
+        match = re.search(rb'NATIVE_PROBE_FAILED:([a-z-]+):', result.stdout)
+        if match and match[1].decode() in ['http', 'origin', 'create-session', 'websocket', 'attach', 'command']:
+            PHASE = 'native-' + match[1].decode()
         raise RuntimeError('host-operation-failed')
     return result.stdout
 
@@ -80,8 +85,8 @@ def write(name, data):
            mode=0o400 if name == 'oauth2-proxy.cfg' else (0o644 if name in OS_FILES else 0o600))
 
 
-def compose(*args, data=None):
-    return run(['docker', 'compose', '-f', str(ROOT / 'compose.json'), *args], data=data)
+def compose(*args, data=None, timeout=600):
+    return run(['docker', 'compose', '-f', str(ROOT / 'compose.json'), *args], data=data, timeout=timeout)
 
 
 def inspect():
@@ -93,6 +98,45 @@ def inspect():
 
 def live_hashes():
     return {name: digest(name, target(name).read_bytes()) for name in FILES if target(name).exists()}
+
+
+
+def service_drift(files):
+    if not (ROOT / 'compose.json').exists(): return []
+    values = inspect()
+    desired = json.loads(files['compose.json'])['services']
+    drift = []
+    for service, expected in desired.items():
+        value = values.get(service)
+        try:
+            assert value and value['State']['Running'] and not value['State']['Restarting']
+            config, limits = value['Config'], value['HostConfig']
+            assert config['Image'] == expected['image']
+            image_config = json.loads(run(['docker', 'image', 'inspect', expected['image']]))[0]['Config']
+            assert config['User'] == expected.get('user', image_config.get('User', ''))
+            assert limits['CapDrop'] == ['ALL'] and not limits['Privileged']
+            assert 'no-new-privileges:true' in limits['SecurityOpt']
+            expected_mounts = {(v.split(':')[0], v.split(':')[1], not v.endswith(':ro')) for v in expected['volumes']}
+            assert {(v['Source'], v['Destination'], v['RW']) for v in value['Mounts'] if v['Type'] == 'bind'} == expected_mounts
+            assert all(v['Type'] in ['bind', 'tmpfs'] for v in value['Mounts'])
+            expected_tmpfs = {v.split(':', 1)[0] for v in expected.get('tmpfs', [])}
+            assert set(limits.get('Tmpfs') or {}) == expected_tmpfs
+            if service == 'terminal':
+                assert value['AppArmorProfile'] == 'codex-terminal'
+                assert any(v.startswith('seccomp=') and 'unconfined' not in v for v in limits['SecurityOpt'])
+                assert limits['PortBindings']['7681/tcp'] == [{'HostIp': '127.0.0.1', 'HostPort': '7681'}]
+                scale = 1024**2 if expected['mem_limit'].endswith('m') else 1024**3
+                assert limits['Memory'] == int(expected['mem_limit'][:-1]) * scale
+                assert limits['MemorySwap'] == limits['Memory']
+                assert limits['NanoCpus'] == int(expected['cpus'] * 1e9)
+                assert limits['PidsLimit'] == expected['pids_limit']
+                image_env = json.loads(run(['docker', 'image', 'inspect', expected['image']]))[0]['Config'].get('Env', [])
+                assert set(config.get('Env', [])) == set(image_env)
+            else:
+                assert limits['NetworkMode'] == 'host' and limits['ReadonlyRootfs']
+                assert {v.removeprefix('CAP_') for v in limits['CapAdd'] or []} == ({'NET_BIND_SERVICE'} if service == 'https' else set())
+        except (AssertionError, KeyError, TypeError): drift.append(service)
+    return sorted(drift)
 
 
 def changes(files):
@@ -108,7 +152,9 @@ def changes(files):
     if 'Caddyfile' in changed: affected.add('https')
     if {'seccomp.json', 'apparmor.profile', 'codex-config.py'} & set(changed): affected.add('terminal')
     # Docker detects neither changed bind-mounted file contents nor profile changes.
-    return {'changed': changed, 'affected': sorted(affected), 'before': live_hashes()}
+    drift = service_drift(files)
+    affected.update(drift)
+    return {'changed': changed, 'affected': sorted(affected), 'serviceDrift': drift, 'before': live_hashes()}
 
 
 def boundaries(expected):
@@ -128,7 +174,7 @@ def boundaries(expected):
     assert {m['Source'] for m in terminal['Mounts']} == {'/srv/codex-terminal/workspace', '/srv/codex-terminal/codex-config'}
     assert values['auth']['HostConfig']['ReadonlyRootfs']
     assert values['https']['HostConfig']['ReadonlyRootfs']
-    assert set(values['https']['HostConfig']['CapAdd'] or []) == {'NET_BIND_SERVICE'}
+    assert {v.removeprefix('CAP_') for v in values['https']['HostConfig']['CapAdd'] or []} == {'NET_BIND_SERVICE'}
     proxy = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text())
     assert proxy['provider'] == 'oidc' and proxy['oidc_groups_claim'] == 'oid'
     assert proxy['cookie_secure'] and proxy['cookie_httponly'] and not proxy['insecure_oidc_skip_nonce']
@@ -144,23 +190,30 @@ def boundaries(expected):
 
 
 def verify(payload, *, deep=True):
+    global PHASE
+    PHASE = 'verify-services'
     expected = json.loads(base64.b64decode(payload['files']['compose.json']))
+    assert not service_drift({k: base64.b64decode(v) for k, v in payload['files'].items()})
     values = boundaries(expected)
+    PHASE = 'verify-identity'
     proxy = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text())
     identity = payload['identity']
     assert proxy['allowed_groups'] == [identity['owner']]
     assert proxy['client_id'] == identity['client']
     assert proxy['oidc_issuer_url'] == 'https://login.microsoftonline.com/' + identity['tenant'] + '/v2.0'
     assert proxy['redirect_url'] == 'https://' + identity['host'] + '/oauth2/callback'
+    PHASE = 'verify-metadata'
     compose('exec', '-T', 'terminal', 'sh', '-ceu',
             'test ! -S /var/run/docker.sock; test ! -e /etc/oauth2-proxy.cfg; '
             'if curl -fsS --max-time 3 -o /dev/null -H Metadata:true '
             '"http://169.254.169.254/metadata/instance?api-version=2021-02-01"; then exit 1; fi')
     if deep:
-        sandbox = compose('exec', '-T', 'terminal', 'sh', data=base64.b64decode(payload['sandbox']))
+        PHASE = 'verify-sandbox'
+        sandbox = compose('exec', '-T', 'terminal', 'sh', data=base64.b64decode(payload['sandbox']), timeout=90)
         assert b'INNER_SANDBOX_WORKSPACE_WRITE_OK' in sandbox and b'INNER_SANDBOX_WRITE_DENIED' in sandbox
+        PHASE = 'verify-native'
         native = compose('exec', '-T', '-e', 'PROBE_HOST=' + identity['host'], 'terminal',
-                         'node', '--input-type=module', '-', data=base64.b64decode(payload['nativeProbe']))
+                         'node', '--input-type=module', '-', data=base64.b64decode(payload['nativeProbe']), timeout=90)
         assert b'DEPLOYED_TERMBEAM_HTTP_WEBSOCKET_ORIGIN_OK' in native
     return {name: hashlib.sha256(v['Id'].encode()).hexdigest() for name, v in values.items()}
 
@@ -186,11 +239,19 @@ def record(payload, extra=None):
     return value
 
 
-def restore(revision):
+def restore(revision, *, preserve_active_credentials=False):
     manifest = json.loads((revision / 'manifest.json').read_text())
+    active_proxy = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text()) if preserve_active_credentials else None
     for name in manifest['changed']:
         previous = revision / name
-        if previous.exists(): write(name, previous.read_bytes())
+        if previous.exists():
+            data = previous.read_bytes()
+            if name == 'oauth2-proxy.cfg' and active_proxy:
+                text = data.decode()
+                for key in ['client_secret', 'cookie_secret']:
+                    text = re.sub(r'^' + key + r'\s*=.*$', lambda _: key + ' = ' + json.dumps(active_proxy[key]), text, flags=re.M)
+                data = text.encode()
+            write(name, data)
         else: target(name).unlink(missing_ok=True)
     if (revision / 'applied.json').exists(): atomic(ROOT / 'applied.json', (revision / 'applied.json').read_bytes())
     if {'apparmor.profile', 'boot-guards.sh', 'network-rules.sh'} & set(manifest['changed']):
@@ -204,18 +265,23 @@ def restore(revision):
 
 
 def apply(payload, files):
+    global PHASE
+    PHASE = 'plan'
     plan = changes(files)
     assert plan['before'] == payload['expectedBefore'], 'concurrent-host-change'
     assert not (ROOT / 'pending.json').exists(), 'unfinished-transaction-requires-recovery'
-    if not plan['changed']:
+    if not plan['changed'] and not plan['serviceDrift']:
         verify(payload, deep=False)
         record(payload)
         return {'changed': [], 'affected': [], 'status': 'unchanged'}
     fresh = not (ROOT / 'compose.json').exists()
-    if fresh: initialize_host()
+    if fresh:
+        PHASE = 'os-readiness'
+        initialize_host()
     before_ids = {s: v['Id'] for s, v in inspect().items()} if not fresh else {}
     previous_auth = Path('/srv/codex-terminal/codex-config/auth.json')
     auth_hash = hashlib.sha256(previous_auth.read_bytes()).digest() if previous_auth.exists() else None
+    PHASE = 'pull-images'
     for service in plan['affected']:
         image = json.loads(files['compose.json'])['services'][service]['image']
         run(['docker', 'pull', image])
@@ -228,6 +294,7 @@ def apply(payload, files):
     atomic(revision / 'manifest.json', json.dumps(plan).encode())
     atomic(ROOT / 'pending.json', json.dumps({'revision': revision_id}).encode())
     try:
+        PHASE = 'install-configuration'
         for name in plan['changed']: write(name, files[name])
         compose('config', '--quiet')
         if 'terminal.service' in plan['changed']:
@@ -238,12 +305,21 @@ def apply(payload, files):
         if fresh or {'apparmor.profile', 'boot-guards.sh', 'network-rules.sh'} & set(plan['changed']):
             run(['bash', str(ROOT / 'boot-guards.sh')])
         if fresh or 'codex-config.py' in plan['changed']:
+            if not fresh: compose('stop', '--timeout', '30', 'terminal')
+            # The terminal owns its data directory. Stop it before root modifies
+            # defaults, reject symlinks/hardlinks, and preserve unrelated settings.
+            config_root = Path('/srv/codex-terminal/codex-config')
+            for entry in [config_root / 'config.toml', config_root / 'sqlite']:
+                assert not entry.is_symlink()
+                if entry.is_file(): assert entry.stat().st_nlink == 1
             run(['python3', str(ROOT / 'codex-config.py')])
         if 'https' in plan['affected']:
             compose('run', '--rm', '--no-deps', 'https', 'caddy', 'validate',
                     '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
+        PHASE = 'start-services'
         for service in plan['affected']:
             compose('up', '-d', '--no-deps', '--pull', 'never', '--force-recreate', service)
+        PHASE = 'verify-runtime'
         deadline = time.monotonic() + 120
         while True:
             try:
@@ -269,6 +345,8 @@ def apply(payload, files):
 
 
 def main(payload):
+    global PHASE
+    PHASE = payload.get('action', 'protocol')
     ROOT.mkdir(mode=0o700, exist_ok=True)
     files = {k: base64.b64decode(v, validate=True) for k, v in payload.get('files', {}).items()}
     assert set(files) == FILES
@@ -280,18 +358,25 @@ def main(payload):
         return result
     if action == 'verify':
         result = changes(files)
-        assert not result['changed'], 'host-configuration-drift'
+        assert not result['changed'] and not result['serviceDrift'], 'host-configuration-drift'
         ids = verify(payload)
         applied = json.loads((ROOT / 'applied.json').read_text())
         assert applied['fingerprint'] == payload['fingerprint'], 'configuration-record-drift'
         return {'status': 'verified', 'containers': ids}
     if action == 'adopt':
         plan = changes(files)
-        assert not plan['changed'], 'adoption-must-have-no-functional-changes'
+        # An absent helper is inert management tooling. Install it without
+        # executing it only after checking the already configured user defaults.
+        additions = [n for n in plan['changed'] if n == 'codex-config.py' and n not in plan['before']]
+        assert set(plan['changed']) == set(additions) and not plan['serviceDrift'], 'adoption-must-have-no-functional-changes'
+        defaults = tomllib.loads(Path('/srv/codex-terminal/codex-config/config.toml').read_text())
+        assert all(defaults.get(k) == v for k, v in {'sqlite_home': '/home/node/.codex/sqlite',
+            'sandbox_mode': 'workspace-write', 'approval_policy': 'on-request', 'cli_auth_credentials_store': 'file'}.items())
         before = verify(payload, deep=False)
+        for name in additions: write(name, files[name])
         record(payload, {'adopted': True})
         assert before == verify(payload, deep=False)
-        return {'status': 'adopted', 'containers': before, 'changed': [], 'affected': []}
+        return {'status': 'adopted', 'containers': before, 'changed': [], 'affected': [], 'managementFilesAdded': additions}
     if action == 'apply': return apply(payload, files)
     if action == 'rollback':
         revision_id = payload.get('revision')
@@ -299,7 +384,7 @@ def main(payload):
             revision_id = json.loads((ROOT / 'applied.json').read_text()).get('rollbackRevision')
         assert isinstance(revision_id, str) and re.fullmatch(r'[0-9T]+-[0-9]+', revision_id)
         revision = RECORDS / revision_id
-        manifest = restore(revision)
+        manifest = restore(revision, preserve_active_credentials=not payload.get('automaticRollback', False))
         boundaries(json.loads((ROOT / 'compose.json').read_bytes()))
         (ROOT / 'pending.json').unlink(missing_ok=True)
         return {'status': 'rolled-back', 'affected': manifest['affected']}
@@ -320,7 +405,7 @@ if __name__ == '__main__':
             fcntl.flock(lock, fcntl.LOCK_EX)
             result = main(payload)
         print('CODEX_RESULT=' + base64.b64encode(json.dumps(result, separators=(',', ':')).encode()).decode())
-    except Exception:
+    except Exception as error:
         # Never print exceptions, subprocess output, local filenames, config or logs.
-        print('CODEX_OPERATION_FAILED', file=sys.stderr)
+        print('CODEX_OPERATION_FAILED:' + PHASE + ':' + type(error).__name__, file=sys.stderr)
         sys.exit(1)

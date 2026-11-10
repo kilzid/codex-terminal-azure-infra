@@ -16,7 +16,7 @@ OS image version changes require an explicit replacement/recovery procedure; an 
 
 Manage domain registration and DNS with your provider. Point an A record for the chosen hostname to the deployment's private recorded public IP (or a supported CNAME to its Azure hostname). Update `hostname` only in the private configuration and republish the environment secret using bootstrap. `plan` validates the change; `apply` adds the new Entra callback, updates only the affected authentication/TLS configuration, verifies public TLS and redirects, and removes the old callback. Failure restores the previous runtime configuration and callbacks. Never put your domain or DNS provider credentials in Git.
 
-VM size and container limits are public settings in the selected profile. Keep B1ms during adoption. A later size change needs its own reviewed maintenance change, completed backup and compatibility check. If Azure requires deallocation, stop and perform the explicit maintenance procedure; automatic reconciliation must not replace the VM or change disk/IP identity to satisfy a size request.
+VM size and container limits are public settings in the selected profile. Keep B1ms during adoption. A later size change needs its own reviewed maintenance change. Apply completes a backup, deallocates the VM, updates its size and starts it again; a failed resize restores the previous size and starts it. Resizing interrupts active sessions. Automatic reconciliation must not replace the VM or change disk/IP identity to satisfy a size request.
 
 ## Credentials
 
@@ -26,7 +26,7 @@ Update your encrypted recovery copy whenever private settings or credentials cha
 
 ## Rollback and interrupted deployment
 
-Runtime verification failure restores the previous configuration and images. It never restores an old workspace snapshot. `rollback` explicitly selects the last recorded runtime revision (or `--revision` from private state), after completing a backup. Revert the corresponding repository commit through a pull request so the desired configuration agrees with the rollback. A pending host transaction stops the next apply and requires recovery; never erase it to force an update.
+Runtime verification failure restores the previous configuration and images. It never restores an old workspace snapshot. `rollback` explicitly selects the last recorded runtime revision (or `--revision` from private state), after completing a backup. Explicit rollback preserves the currently active client/cookie credentials so a previous rotation's revoked credential is not reinstated. Revert the corresponding repository commit through a pull request so the desired configuration agrees with the rollback. A pending host transaction stops the next apply and requires recovery; never erase it to force an update.
 
 Infrastructure reconciliation is incremental and refuses deletion and immutable VM changes. Infrastructure failures are not automatically reversed through destructive ARM deployment. Resolve the private preview and recover explicitly. No automatic path permanently deletes data, workspaces or backups.
 

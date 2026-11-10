@@ -19,3 +19,5 @@ Fork this public repository. Your fork is authoritative for your deployment. Kee
 The Azure hostname works without an external domain. To use a custom hostname later, create the external DNS record, update the private `hostname`, rerun bootstrap to publish updated environment inputs, then plan/apply. Domain registration and DNS provider administration stay outside this repository.
 
 A fresh installation must not point at an existing VM. Use the [adoption procedure](adoption.md) for an existing deployment. The CLI will not infer consent to replace it.
+
+For an isolated acceptance deployment, use a separate private directory/resource group and `bootstrap --fresh --no-publish`. This explicitly keeps the existing GitHub environment secrets intact. It does not authorize deploying test settings to production.
