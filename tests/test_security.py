@@ -10,7 +10,7 @@ import uuid
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'operations'),str(ROOT/'tools')]
 from cloud import Cloud, Failure, claims
-from identity import oidc_subject
+from identity import oidc_subject, repository_binding
 from privacy import scan
 
 
@@ -65,6 +65,14 @@ class SecurityTests(unittest.TestCase):
         production=(ROOT/'.github/workflows/production.yml').read_text()
         self.assertNotIn('pull_request',production)
         self.assertIn('cancel-in-progress: false',production)
+        self.assertIn('queue: max',production)
         self.assertIn("github.ref == 'refs/heads/main'",production)
         self.assertIn('ref: main',production)
         self.assertNotIn('upload-artifact',production)
+
+    def test_forks_can_bootstrap_their_own_identity_without_inheriting_upstream(self):
+        repo={'full_name':'example/infra','fork':True,'id':3,'owner':{'id':4},'permissions':{'admin':True}}
+        self.assertEqual(repository_binding(repo,'example/infra'),{'repositoryId':3,'repositoryOwnerId':4})
+        with self.assertRaises(Failure):repository_binding(repo,'another/infra')
+        repo['permissions']['admin']=False
+        with self.assertRaises(Failure):repository_binding(repo,'example/infra')

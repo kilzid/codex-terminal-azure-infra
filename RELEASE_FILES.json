@@ -54,6 +54,7 @@
   "schemas/private.schema.json",
   "schemas/runtime-secrets.schema.json",
   "tests/native-smoke.mjs",
+  "tests/test_cloud.py",
   "tests/test_controller.py",
   "tests/test_preview.py",
   "tests/test_runtime.py",

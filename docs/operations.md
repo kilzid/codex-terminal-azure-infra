@@ -4,7 +4,9 @@ All commands use `./codex-infra COMMAND --private /absolute/private/directory`. 
 
 `apply` reads actual infrastructure and managed host files, calculates differences, completes a VM backup before disruptive changes, retains previous runtime configuration and applies only changed components. No-op applications do not rotate credentials, recreate containers or rewrite equivalent configuration. The applied Git commit, lockfile and private configuration fingerprint are stored root-only on the VM. Scheduling runs verification, never automatic adoption of drift.
 
-The production workflow uses a non-cancelling concurrency group. When it obtains the lock it checks out current `main` and runs validation and container tests against that actual revision. A queued old workflow therefore reconciles the latest desired revision. No PR, fork PR or feature branch can enter the production environment or obtain its Azure identity.
+Pull requests use rebase merge so the checked source author identities are preserved. Keep source branches current with main and use no-reply author emails.
+
+The production workflow uses a non-cancelling concurrency group with GitHub's buffered queue, so scheduled verification cannot replace a pending deployment. When it obtains the lock it checks out current `main` and runs validation and container tests against that actual revision. A queued old workflow therefore reconciles the latest desired revision. No PR, fork PR or feature branch can enter the production environment or obtain its Azure identity.
 
 ## Image updates
 
@@ -30,4 +32,4 @@ Runtime verification failure restores the previous configuration and images. It 
 
 Infrastructure reconciliation is incremental and refuses deletion and immutable VM changes. Infrastructure failures are not automatically reversed through destructive ARM deployment. Resolve the private preview and recover explicitly. No automatic path permanently deletes data, workspaces or backups.
 
-The host retains the configured number of private runtime revisions. VM recovery points use the configured daily retention; service-managed snapshot and backup artifacts follow Azure Backup policy. Only managed Run Command records older than the configured retention are removed automatically; records outside the managed prefix remain for the administrator to review. Never use Docker image pruning as part of deployment: offline rollback needs the previous image.
+The host retains the configured number of private runtime revisions. VM recovery points use the configured daily retention; service-managed snapshot and backup artifacts follow Azure Backup policy. The controller reuses one owned Managed Run Command resource to respect Azure's 25-resource-per-VM limit, and each invocation has a unique completion marker to reject stale results. Only other managed Run Command records older than the configured retention are removed automatically; records outside the managed prefix remain for the administrator to review. Never use Docker image pruning as part of deployment: offline rollback needs the previous image.

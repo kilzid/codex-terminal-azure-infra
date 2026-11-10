@@ -105,8 +105,8 @@ class RuntimeTests(unittest.TestCase):
             with patch.object(host,'ROOT',root),patch.object(host,'RECORDS',root/'revisions'), \
                  patch.object(host,'run'),patch.object(host,'compose') as commands, \
                  patch.object(host,'inspect',return_value={s:{'Id':s} for s in host.SERVICES}), \
-                 patch.object(host,'verify',side_effect=RuntimeError('synthetic-failure')), \
-                 patch.object(host.time,'monotonic',side_effect=[0,500]):
+                 patch.object(host,'verify',side_effect=[RuntimeError('synthetic-failure'),None]), \
+                 patch.object(host.time,'monotonic',side_effect=[0,500,0]):
                 with self.assertRaises(RuntimeError):
                     host.apply({**self.payload(),'expectedBefore':host.live_hashes()},files)
                 self.assertEqual((root/'compose.json').read_bytes(),original)
@@ -167,3 +167,18 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(restored['client_secret'],'active-credential')
             self.assertEqual(restored['cookie_secret'],'active-cookie')
             self.assertEqual(restored['redirect_url'],'https://previous.example.com/oauth2/callback')
+
+    def test_failed_rollback_retains_pending_recovery_journal(self):
+        files=self.files()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.install(root,files)
+            updated=json.loads(files['compose.json']);updated['services']['terminal']['image']='deliberate-failure'
+            files['compose.json']=json.dumps(updated).encode()
+            with patch.object(host,'ROOT',root),patch.object(host,'RECORDS',root/'revisions'), \
+                 patch.object(host,'run'),patch.object(host,'compose'), \
+                 patch.object(host,'inspect',return_value={s:{'Id':s} for s in host.SERVICES}), \
+                 patch.object(host,'verify',side_effect=RuntimeError('synthetic-failure')), \
+                 patch.object(host.time,'monotonic',side_effect=[0,500,0,500]):
+                with self.assertRaises(RuntimeError):
+                    host.apply({**self.payload(),'expectedBefore':host.live_hashes()},files)
+                self.assertTrue((root/'pending.json').exists())

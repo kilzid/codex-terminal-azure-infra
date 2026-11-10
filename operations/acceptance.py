@@ -96,50 +96,60 @@ def test(ctl):
     assert_isolated(ctl)
     p=ctl.private
     ctl.verify()
-    marker=secrets.token_hex(24)
-    ctl.cloud.run_host(MARKERS,{'marker':marker},name='acceptance-markers')
-    print('{"status":"isolated-backup-starting"}',flush=True)
-    ctl.cloud.backup(ctl.settings['backup']['dailyRetentionDays'])
+    state_path=ctl.directory/'acceptance-state.json'
+    state=json.loads(state_path.read_text()) if state_path.exists() else {}
+    marker=state.get('marker') or secrets.token_hex(24)
     newer=marker+'-newer-than-backup'
-    ctl.cloud.run_host(MARKERS,{'marker':newer},name='acceptance-newer-data')
-    baseline=ctl.host('verify')['containers']
-    # Deliberately substitute a different public binary for the terminal. The
-    # fault stays outside the lockfile and cannot pass normal configuration CI.
-    payload=ctl.payload('apply')
-    compose=json.loads(base64.b64decode(payload['files']['compose.json']))
-    compose['services']['terminal']['image']=ctl.images['auth']
-    payload['files']['compose.json']=base64.b64encode(json.dumps(compose).encode()).decode()
-    payload['expectedBefore']=ctl.host('plan')['before']
-    try:
-        ctl.cloud.run_host((ROOT/'runtime/host.py').read_text(),payload,name='acceptance-failing-image')
-    except Failure as error:
-        require(str(error).startswith(('host-verify-', 'host-native-')), 'fault-did-not-reach-runtime-verification')
-    else: raise Failure('deliberately-failing-image-was-accepted')
-    require(baseline['auth']==ctl.host('verify')['containers']['auth'] and
-            baseline['https']==ctl.host('verify')['containers']['https'], 'fault-restarted-unaffected-services')
-    ctl.cloud.run_host(CHECK_LIVE,{'marker':newer},name='acceptance-rollback-data')
-    print('{"status":"failed-image-rollback-and-newest-data-preservation-verified"}',flush=True)
+    state.update(marker=marker,newer=newer)
+    if not state.get('backupCompleted'):
+        ctl.cloud.run_host(MARKERS,{'marker':marker},name='acceptance-markers')
+        atomic(state_path,state)
+        print('{"status":"isolated-backup-starting"}',flush=True)
+        ctl.cloud.backup(ctl.settings['backup']['dailyRetentionDays'])
+        state['backupCompleted']=True
     points=az('backup','recoverypoint','list','--resource-group',p['resourceGroup'],'--vault-name',p['resources']['vaultName'],
               '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['backupItem'],
               '--backup-management-type','AzureIaasVM','--subscription',p['subscriptionId'])
     require(points,'isolated-recovery-point-missing')
-    point=max(points,key=lambda v:v['properties']['recoveryPointTime'])
+    point=next((v for v in points if v['name']==state.get('recoveryPoint')),None)
+    point=point or max(points,key=lambda v:v['properties']['recoveryPointTime'])
+    state['recoveryPoint']=point['name'];atomic(state_path,state)
+    if not state.get('runtimeFailureRolledBack'):
+        ctl.cloud.run_host(MARKERS,{'marker':newer},name='acceptance-newer-data')
+        baseline=ctl.host('verify')['containers']
+        # Substitute a different public binary only in this isolated host test.
+        # It cannot pass the normal immutable lockfile schema or PR checks.
+        payload=ctl.payload('apply')
+        compose=json.loads(base64.b64decode(payload['files']['compose.json']))
+        compose['services']['terminal']['image']=ctl.images['auth']
+        payload['files']['compose.json']=base64.b64encode(json.dumps(compose).encode()).decode()
+        payload['expectedBefore']=ctl.host('plan')['before']
+        try:
+            ctl.cloud.run_host((ROOT/'runtime/host.py').read_text(),payload,name='acceptance-failing-image')
+        except Failure as error:
+            require(str(error).startswith(('host-verify-', 'host-native-')), 'fault-did-not-reach-runtime-verification')
+        else: raise Failure('deliberately-failing-image-was-accepted')
+        after=ctl.host('verify')['containers']
+        require(baseline['auth']==after['auth'] and baseline['https']==after['https'], 'fault-restarted-unaffected-services')
+        ctl.cloud.run_host(CHECK_LIVE,{'marker':newer},name='acceptance-rollback-data')
+        state['runtimeFailureRolledBack']=True;atomic(state_path,state)
+        print('{"status":"failed-image-rollback-and-newest-data-preservation-verified"}',flush=True)
     restore_group=p['resourceGroup']+'-restore'
-    storage='ctrestore'+secrets.token_hex(6)
-    tags=['application=codex-terminal','purpose=codex-infra-acceptance']
-    az('group','create','--name',restore_group,'--location',p['location'],'--tags',*tags,'--subscription',p['subscriptionId'])
-    account=az('storage','account','create','--resource-group',restore_group,'--name',storage,'--location',p['location'],
-        '--sku','Standard_LRS','--kind','StorageV2','--min-tls-version','TLS1_2','--https-only','true',
-        '--allow-blob-public-access','false','--default-action','Deny','--bypass','AzureServices','--tags',*tags,
-        '--subscription',p['subscriptionId'])
-    state={'restoreGroup':restore_group,'stagingStorage':account['id'],'recoveryPoint':point['name']}
-    atomic(ctl.directory/'acceptance-state.json',state)
-    job=az('backup','restore','restore-disks','--resource-group',p['resourceGroup'],'--vault-name',p['resources']['vaultName'],
-        '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['backupItem'],'--rp-name',point['name'],
-        '--storage-account',account['id'],'--storage-account-resource-group',restore_group,'--target-resource-group',restore_group,
-        '--restore-only-osdisk','true','--restore-as-unmanaged-disks','false','--subscription',p['subscriptionId'])
-    state['restoreJob']=job['name'];atomic(ctl.directory/'acceptance-state.json',state)
-    wait_job(ctl,job['name'])
+    if not state.get('restoreJob'):
+        storage='ctrestore'+secrets.token_hex(6)
+        tags=['application=codex-terminal','purpose=codex-infra-acceptance']
+        az('group','create','--name',restore_group,'--location',p['location'],'--tags',*tags,'--subscription',p['subscriptionId'])
+        account=az('storage','account','create','--resource-group',restore_group,'--name',storage,'--location',p['location'],
+            '--sku','Standard_LRS','--kind','StorageV2','--min-tls-version','TLS1_2','--https-only','true',
+            '--allow-blob-public-access','false','--default-action','Deny','--bypass','AzureServices','--tags',*tags,
+            '--subscription',p['subscriptionId'])
+        state.update(restoreGroup=restore_group,stagingStorage=account['id']);atomic(state_path,state)
+        job=az('backup','restore','restore-disks','--resource-group',p['resourceGroup'],'--vault-name',p['resources']['vaultName'],
+            '--container-name',p['resources']['backupContainer'],'--item-name',p['resources']['backupItem'],'--rp-name',point['name'],
+            '--storage-account',account['id'],'--storage-account-resource-group',restore_group,'--target-resource-group',restore_group,
+            '--restore-only-osdisk','true','--restore-as-unmanaged-disks','false','--subscription',p['subscriptionId'])
+        state['restoreJob']=job['name'];atomic(state_path,state)
+    wait_job(ctl,state['restoreJob'])
     disks=az('disk','list','--resource-group',restore_group,'--subscription',p['subscriptionId'])
     require(len(disks)==1,'isolated-restore-disk-count-unexpected')
     state['restoredDisk']=disks[0]['id'];atomic(ctl.directory/'acceptance-state.json',state)

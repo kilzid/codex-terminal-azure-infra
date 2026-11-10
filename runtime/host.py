@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from urllib.parse import urlsplit
 
 ROOT = Path('/etc/codex-terminal')
 RECORDS = ROOT / 'revisions'
@@ -239,6 +240,32 @@ def record(payload, extra=None):
     return value
 
 
+
+def configure_codex_defaults():
+    compose('stop', '--timeout', '30', 'terminal')
+    config_root = Path('/srv/codex-terminal/codex-config')
+    for entry in [config_root / 'config.toml', config_root / 'sqlite']:
+        assert not entry.is_symlink()
+        if entry.is_file(): assert entry.stat().st_nlink == 1
+    run(['python3', str(ROOT / 'codex-config.py')])
+
+
+def verify_restored(payload):
+    previous = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text())
+    old_payload = {**payload, 'files': {n: base64.b64encode(target(n).read_bytes()).decode() for n in FILES},
+        'identity': {'tenant': urlsplit(previous['oidc_issuer_url']).path.split('/')[-2],
+                     'client': previous['client_id'], 'owner': previous['allowed_groups'][0],
+                     'host': urlsplit(previous['redirect_url']).hostname}}
+    deadline = time.monotonic() + 120
+    while True:
+        try:
+            verify(old_payload)
+            return previous
+        except (AssertionError, RuntimeError):
+            if time.monotonic() >= deadline: raise
+            time.sleep(3)
+
+
 def restore(revision, *, preserve_active_credentials=False):
     manifest = json.loads((revision / 'manifest.json').read_text())
     active_proxy = tomllib.loads((ROOT / 'oauth2-proxy.cfg').read_text()) if preserve_active_credentials else None
@@ -256,6 +283,7 @@ def restore(revision, *, preserve_active_credentials=False):
     if (revision / 'applied.json').exists(): atomic(ROOT / 'applied.json', (revision / 'applied.json').read_bytes())
     if {'apparmor.profile', 'boot-guards.sh', 'network-rules.sh'} & set(manifest['changed']):
         run(['bash', str(ROOT / 'boot-guards.sh')])
+    if 'codex-config.py' in manifest['changed']: configure_codex_defaults()
     if 'terminal.service' in manifest['changed']: run(['systemctl', 'daemon-reload'])
     if 'sysctl.conf' in manifest['changed']: run(['sysctl', '--system'])
     if 'docker-daemon.json' in manifest['changed']: run(['systemctl', 'restart', 'docker'])
@@ -293,6 +321,7 @@ def apply(payload, files):
     if (ROOT / 'applied.json').exists(): atomic(revision / 'applied.json', (ROOT / 'applied.json').read_bytes())
     atomic(revision / 'manifest.json', json.dumps(plan).encode())
     atomic(ROOT / 'pending.json', json.dumps({'revision': revision_id}).encode())
+    settled = False
     try:
         PHASE = 'install-configuration'
         for name in plan['changed']: write(name, files[name])
@@ -304,15 +333,7 @@ def apply(payload, files):
         if 'docker-daemon.json' in plan['changed']: run(['systemctl', 'restart', 'docker'])
         if fresh or {'apparmor.profile', 'boot-guards.sh', 'network-rules.sh'} & set(plan['changed']):
             run(['bash', str(ROOT / 'boot-guards.sh')])
-        if fresh or 'codex-config.py' in plan['changed']:
-            if not fresh: compose('stop', '--timeout', '30', 'terminal')
-            # The terminal owns its data directory. Stop it before root modifies
-            # defaults, reject symlinks/hardlinks, and preserve unrelated settings.
-            config_root = Path('/srv/codex-terminal/codex-config')
-            for entry in [config_root / 'config.toml', config_root / 'sqlite']:
-                assert not entry.is_symlink()
-                if entry.is_file(): assert entry.stat().st_nlink == 1
-            run(['python3', str(ROOT / 'codex-config.py')])
+        if fresh or 'codex-config.py' in plan['changed']: configure_codex_defaults()
         if 'https' in plan['affected']:
             compose('run', '--rm', '--no-deps', 'https', 'caddy', 'validate',
                     '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
@@ -335,13 +356,17 @@ def apply(payload, files):
         record(payload, {'rollbackRevision': revision_id})
         # Mark success before the controller checks public TLS. Its failure invokes rollback.
         atomic(revision / 'completed', b'1')
+        settled = True
         return {'changed': plan['changed'], 'affected': plan['affected'], 'status': 'applied', 'revision': revision_id}
     except Exception:
         # Fresh-install failures have no previous runnable configuration.
-        if not fresh: restore(revision)
+        if not fresh:
+            restore(revision)
+            verify_restored(payload)
+        settled = True
         raise RuntimeError('runtime-update-failed-previous-configuration-restored' if not fresh else 'fresh-runtime-failed') from None
     finally:
-        (ROOT / 'pending.json').unlink(missing_ok=True)
+        if settled: (ROOT / 'pending.json').unlink(missing_ok=True)
 
 
 def main(payload):
@@ -380,19 +405,25 @@ def main(payload):
     if action == 'apply': return apply(payload, files)
     if action == 'rollback':
         revision_id = payload.get('revision')
+        if not revision_id and (ROOT / 'pending.json').exists():
+            revision_id = json.loads((ROOT / 'pending.json').read_text())['revision']
         if not revision_id:
             revision_id = json.loads((ROOT / 'applied.json').read_text()).get('rollbackRevision')
         assert isinstance(revision_id, str) and re.fullmatch(r'[0-9T]+-[0-9]+', revision_id)
         revision = RECORDS / revision_id
         manifest = restore(revision, preserve_active_credentials=not payload.get('automaticRollback', False))
-        boundaries(json.loads((ROOT / 'compose.json').read_bytes()))
+        previous = verify_restored(payload)
         (ROOT / 'pending.json').unlink(missing_ok=True)
-        return {'status': 'rolled-back', 'affected': manifest['affected']}
+        return {'status': 'rolled-back', 'affected': manifest['affected'],
+                'hostname': urlsplit(previous['redirect_url']).hostname, 'callback': previous['redirect_url']}
     if action == 'commit':
         # Keep encrypted-at-rest old proxy configurations only for the configured
         # revision count. Docker images are not pruned: rollback must work offline.
         revisions = sorted(p for p in RECORDS.glob('*') if p.is_dir())
         for old in revisions[:-payload['runtimeRevisions']]: shutil.rmtree(old)
+        cutoff = time.time() - payload.get('runCommandDays', 7) * 86400
+        for old in (ROOT / 'run-command-archive').glob('*.json'):
+            if old.stat().st_mtime < cutoff: old.unlink()
         return {'status': 'recorded'}
     raise ValueError('unsupported-operation')
 

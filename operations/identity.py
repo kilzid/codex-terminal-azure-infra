@@ -76,13 +76,14 @@ def local_policy_reader(cloud):
                     'grant_type': 'client_credentials', 'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
                     'client_assertion': assertion}).encode()
                 req = urllib.request.Request(endpoint, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
-                for attempt in range(12):
+                for attempt in range(36):
                     try:
                         with urllib.request.urlopen(req, timeout=60) as response: value = json.load(response)['access_token']
                         break
                     except urllib.error.HTTPError as error:
                         detail = json.loads(error.read())
-                        if attempt == 11 or error.code != 401 or 'AADSTS700027' not in detail.get('error_description', ''): raise
+                        if error.code != 401 or 'AADSTS700027' not in detail.get('error_description', ''): raise
+                        require(attempt < 35, 'policy-credential-propagation-timeout')
                         time.sleep(5)
                 c = claims(value)
                 require(c['tid'] == p['tenantId'] and c['oid'] == p['deploymentObjectId'] and
@@ -111,15 +112,30 @@ def grant_role(cloud, principal, scope, suffix, actions):
                                                'principalType': 'ServicePrincipal'}}, api='2022-04-01')
 
 
+def repository_binding(repo, expected):
+    # Forks establish their own immutable identity and production environment;
+    # they never inherit the source repository's secrets or Azure access.
+    require(repo['full_name'].lower() == expected.lower() and not repo.get('archived'), 'bootstrap-repository-mismatch')
+    require(repo.get('permissions', {}).get('admin') is True, 'repository-administration-required')
+    return {'repositoryId': repo['id'], 'repositoryOwnerId': repo['owner']['id']}
+
+
 def bootstrap(directory, *, publish=True):
     from controller import load_json, validate
     directory = Path(directory).expanduser().resolve()
     p = load_json(directory / 'private.json', 'bootstrap')
+    if p['profile'] == 'adopted':
+        require(all(p.get(k) for k in ['runtimeApplicationObjectId', 'runtimeServicePrincipalId', 'runtimeClientId', 'hostname', 'azureHostname']), 'existing-runtime-mappings-required-for-adoption')
     cloud = Cloud(p)
     cloud.preflight(administrator=True)
     repo = gh('repos/' + p['repository'])
-    require(not repo.get('fork') and repo['owner']['login'].lower() == p['repository'].split('/')[0].lower(), 'bootstrap-repository-mismatch')
-    p.update(repositoryId=repo['id'], repositoryOwnerId=repo['owner']['id'])
+    p.update(repository_binding(repo, p['repository']))
+    gh('repos/' + p['repository'], 'PATCH', {'allow_rebase_merge': True, 'allow_merge_commit': False, 'allow_squash_merge': False})
+    gh('repos/' + p['repository'] + '/branches/main/protection', 'PUT', {
+        'required_status_checks': {'strict': True, 'contexts': ['validate', 'container-policies']},
+        'enforce_admins': True, 'required_linear_history': True,
+        'required_pull_request_reviews': {'dismiss_stale_reviews': True, 'require_code_owner_reviews': False, 'required_approving_review_count': 0},
+        'restrictions': None, 'allow_force_pushes': False, 'allow_deletions': False})
     # The environment is restricted before any production secret is uploaded.
     gh('repos/' + p['repository'] + '/environments/production', 'PUT',
        {'wait_timer': 0, 'reviewers': [], 'deployment_branch_policy': {'protected_branches': False, 'custom_branch_policies': True}})

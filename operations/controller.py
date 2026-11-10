@@ -58,7 +58,7 @@ class Controller:
         require(self.profile in ['deployment', 'adopted'], 'unknown-deployment-profile')
         self.settings = load_json(ROOT / 'config' / (self.profile + '.json'), 'deployment')
         self.images = load_json(ROOT / 'images.lock.json', 'images')
-        self.cloud = Cloud(self.private)
+        self.cloud = Cloud(self.private, self.directory)
         self.commit = git_commit()
         for path in self.directory.glob('*.json'): path.chmod(0o600)
 
@@ -84,7 +84,8 @@ class Controller:
                 'identity': {'tenant': p['tenantId'], 'client': p['runtimeClientId'], 'owner': p['userObjectId'], 'host': p['hostname']},
                 'sandbox': base64.b64encode((ROOT / 'runtime/sandbox-check.sh').read_bytes()).decode(),
                 'nativeProbe': base64.b64encode((ROOT / 'runtime/native-probe.mjs').read_bytes()).decode(),
-                'runtimeRevisions': self.settings['retention']['runtimeRevisions']}
+                'runtimeRevisions': self.settings['retention']['runtimeRevisions'],
+                'runCommandDays': self.settings['retention']['runCommandDays']}
 
     def host(self, action, **extra):
         return self.cloud.run_host((ROOT / 'runtime/host.py').read_text(), {**self.payload(action), **extra}, name=action)
@@ -138,6 +139,8 @@ class Controller:
         # Incremental deployments plus restricted RBAC never delete retained resources.
         require(all(v.get('changeType') in ['Create', 'Modify', 'Deploy'] for v in changes), 'destructive-infrastructure-plan-rejected')
         for item in changes:
+            if item.get('resourceId', '').lower() == self.cloud.vm.lower() and item.get('changeType') == 'Create':
+                require(self.private['profile'] == 'deployment' and not self.private['resources'].get('vmInstanceId'), 'automatic-vm-recreation-rejected')
             if item.get('resourceId', '').lower() == self.cloud.vm.lower() and item.get('changeType') != 'Create':
                 for delta in item.get('delta') or []:
                     path = delta.get('path', '').lower()
@@ -168,10 +171,10 @@ class Controller:
                 if not notification.get(key): notification.pop(key, None)
         return comparison != desired
 
-    def public_verify(self):
+    def public_verify(self, *, hostname=None):
         p = self.private
         opener = urllib.request.build_opener(NoRedirect())
-        base = 'https://' + p['hostname']
+        base = 'https://' + (hostname or p['hostname'])
         probes = [('/', {}), ('/api/sessions', {}), ('/ws', {'Connection': 'Upgrade', 'Upgrade': 'websocket',
                    'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ=='}),
                   ('/', {'Cookie': '__Host-codex_terminal=forged'})]
@@ -186,6 +189,29 @@ class Controller:
                         and query.get('client_id') == [p['runtimeClientId']]
                         and query.get('redirect_uri') == [base + '/oauth2/callback'], 'public-entra-boundary-failed')
             finally: response.close()
+
+    def bind_resource_identity(self, vm, ip):
+        disk_id = vm['properties']['storageProfile']['osDisk']['managedDisk']['id']
+        disk = self.cloud.arm(disk_id, api='2024-03-02')
+        self.private['resources'].update(vmInstanceId=vm['properties']['vmId'], osDiskId=disk_id,
+            osDiskUniqueId=disk['properties']['uniqueId'], publicIpId=ip['id'])
+        validate(self.private, 'private')
+        atomic(self.directory / 'private.json', self.private)
+
+    def guard_resource_identity(self):
+        expected = self.private['resources']
+        if not expected.get('vmInstanceId'): return
+        vm = self.cloud.arm(self.cloud.vm)
+        require(vm['properties']['vmId'] == expected['vmInstanceId'], 'vm-instance-replacement-rejected')
+        disk_id = vm['properties']['storageProfile']['osDisk']['managedDisk']['id']
+        require(disk_id.lower() == expected['osDiskId'].lower(), 'os-disk-replacement-rejected')
+        disk = self.cloud.arm(disk_id, api='2024-03-02')
+        require(disk['properties']['uniqueId'] == expected['osDiskUniqueId'], 'os-disk-instance-replacement-rejected')
+        nic = self.cloud.arm(vm['properties']['networkProfile']['networkInterfaces'][0]['id'], api='2024-05-01')
+        ip_id = nic['properties']['ipConfigurations'][0]['properties']['publicIPAddress']['id']
+        require(ip_id.lower() == expected['publicIpId'].lower(), 'public-ip-resource-replacement-rejected')
+        ip = self.cloud.arm(ip_id, api='2024-05-01')
+        require(ip['properties']['ipAddress'] == expected['publicIp'], 'public-ip-address-change-rejected')
 
     def actual_infrastructure(self):
         p = self.private
@@ -222,6 +248,7 @@ class Controller:
         self.cloud.preflight()
         self.cloud.mfa()
         app = self.cloud.identity()
+        self.guard_resource_identity()
         infrastructure = self.infrastructure_plan()
         host = self.host('plan')
         result = {'infrastructure': infrastructure, 'host': host,
@@ -282,6 +309,7 @@ class Controller:
         self.cloud.preflight()
         self.cloud.mfa()
         self.cloud.identity(callback='https://' + self.private['hostname'] + '/oauth2/callback')
+        self.guard_resource_identity()
         self.actual_infrastructure()
         require(not self.infrastructure_plan() and not self.budget_changed(), 'infrastructure-drift-detected')
         result = self.host('verify')
@@ -301,7 +329,14 @@ class Controller:
         self.cloud.preflight()
         self.cloud.mfa()
         self.cloud.backup(self.settings['backup']['dailyRetentionDays'])
-        return self.host('rollback', revision=revision)
+        result = self.host('rollback', revision=revision)
+        registration = self.cloud.identity()
+        if registration['web']['redirectUris'] != [result['callback']]:
+            self.cloud.graph('applications/' + self.private['runtimeApplicationObjectId'], 'PATCH',
+                             {'web': {**registration['web'], 'redirectUris': [result['callback']]}})
+        self.public_verify(hostname=result['hostname'])
+        atomic(self.directory / 'rollback-result.json', result)
+        return {'status': result['status'], 'affectedServices': result['affected']}
 
     def rotate_credentials(self):
         self.cloud.preflight(administrator=True)

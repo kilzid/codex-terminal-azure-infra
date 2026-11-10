@@ -69,6 +69,7 @@ def adopt(ctl):
     require(set(plan['host']['changed']) == set(management_additions) and not plan['host'].get('serviceDrift') and not plan['callbackChanged'] and not plan['budgetChanged'], 'adoption-would-change-live-configuration')
     require(not plan['infrastructure'], 'adoption-infrastructure-mismatch')
     ctl.public_verify()
+    ctl.bind_resource_identity(vm, ip)
     result = ctl.host('adopt')
     atomic(ctl.directory / 'adoption-baseline.json', {'vmId': vm['id'], 'instanceId': vm['properties']['vmId'],
         'diskId': vm['properties']['storageProfile']['osDisk']['managedDisk']['id'], 'ipId': ip['id'],
@@ -98,7 +99,7 @@ def fresh(ctl, *, publish=True):
     p['azureHostname'] = ip['properties']['dnsSettings']['fqdn']
     p.setdefault('hostname', p['azureHostname'])
     p['resources']['publicIp'] = ip['properties']['ipAddress']
-    atomic(ctl.directory / 'private.json', p)
+    ctl.bind_resource_identity(vm, ip)
     if ctl.secrets is None:
         expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=180)
         credential = ctl.cloud.graph('applications/' + p['runtimeApplicationObjectId'] + '/addPassword', 'POST',

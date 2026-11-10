@@ -163,6 +163,23 @@
             "type": "string",
             "pattern": "^[a-z0-9]+$"
           }
+        },
+        "vmInstanceId": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "osDiskUniqueId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "osDiskId": {
+          "type": "string",
+          "pattern": "^/subscriptions/[A-Fa-f0-9-]{36}/resourceGroups/[A-Za-z0-9_-]+/providers/Microsoft.Compute/disks/[A-Za-z0-9_.-]+$"
+        },
+        "publicIpId": {
+          "type": "string",
+          "pattern": "^/subscriptions/[A-Fa-f0-9-]{36}/resourceGroups/[A-Za-z0-9_-]+/providers/Microsoft.Network/publicIPAddresses/[A-Za-z0-9_.-]+$"
         }
       },
       "required": [

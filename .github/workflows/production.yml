@@ -7,10 +7,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# Never cancel an active mutation. Pending runs always check out and test main's
+# Never cancel an active mutation or replace a queued deployment with a scheduled
+# verification. Pending runs always check out and test main's
 # current head when they obtain this lock, so obsolete queued SHAs are not applied.
 concurrency:
   group: production
+  queue: max
   cancel-in-progress: false
 jobs:
   production:
@@ -39,6 +41,9 @@ jobs:
         env:
           PRIVATE_CONFIG: ${{ secrets.PRIVATE_CONFIG }}
           RUNTIME_SECRETS: ${{ secrets.RUNTIME_SECRETS }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: python3 tools/ci-private.py
       - name: Azure workload identity
         uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a

@@ -74,3 +74,21 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(Failure):c.apply_infrastructure()
         self.assertEqual([call.args[1] for call in az.call_args_list],['deallocate','resize','start'])
         self.assertIn('Standard_B1ms',az.call_args_list[1].args)
+
+    def test_bound_resource_identity_rejects_recreated_vm_before_preview(self):
+        c=self.controller()
+        c.private['resources']={'vmInstanceId':'original-instance','osDiskId':'synthetic-disk',
+            'osDiskUniqueId':'original-disk-instance','publicIpId':'synthetic-ip','publicIp':'192.0.2.1'}
+        c.cloud.arm.return_value={'properties':{'vmId':'recreated-instance'}}
+        with self.assertRaises(Failure):c.guard_resource_identity()
+        self.assertEqual(c.cloud.arm.call_count,1)
+
+    def test_bound_resource_identity_rejects_recreated_disk_with_same_resource_id(self):
+        c=self.controller()
+        c.private['resources']={'vmInstanceId':'original-instance','osDiskId':'synthetic-disk',
+            'osDiskUniqueId':'original-disk-instance','publicIpId':'synthetic-ip','publicIp':'192.0.2.1'}
+        c.cloud.arm.side_effect=[{'properties':{'vmId':'original-instance',
+            'storageProfile':{'osDisk':{'managedDisk':{'id':'synthetic-disk'}}}}},
+            {'properties':{'uniqueId':'replacement-disk-instance'}}]
+        with self.assertRaises(Failure):c.guard_resource_identity()
+        self.assertEqual(c.cloud.arm.call_count,2)

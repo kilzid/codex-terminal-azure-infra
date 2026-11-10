@@ -40,7 +40,7 @@ def private_values(directory):
             if key in {'subscriptionId','tenantId','adminObjectId','userObjectId','runtimeApplicationObjectId',
                        'runtimeServicePrincipalId','runtimeClientId','deploymentApplicationObjectId','deploymentObjectId',
                        'deploymentClientId','contactEmail','hostname','azureHostname','adminPublicKey','publicIp',
-                       'recoveryStorageName','auditWorkspaceName','clientSecret','cookieSecret','keyId'}: values.add(value)
+                       'recoveryStorageName','auditWorkspaceName','clientSecret','cookieSecret','keyId','vmInstanceId','osDiskId','osDiskUniqueId','publicIpId'}: values.add(value)
     for name in ['private.json', 'runtime-secrets.json']:
         path = Path(directory) / name
         if path.exists(): visit(json.loads(path.read_text()))
@@ -60,7 +60,7 @@ def scan(data, private):
         if not (address.is_private or address.is_loopback or address.is_link_local or
                 value in ['168.63.129.16']): raise ValueError('public-address-found')
     for value in re.findall(r'\b[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', text):
-        if not value.endswith(('@example.com', '@example.invalid', '@users.noreply.github.com')):
+        if value != 'noreply@github.com' and not value.endswith(('@example.com', '@example.invalid', '@users.noreply.github.com')):
             raise ValueError('personal-email-found')
 
 

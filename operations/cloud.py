@@ -2,9 +2,12 @@
 import base64
 import datetime as dt
 import json
+import gzip
+import hashlib
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import tempfile
 import time
@@ -71,8 +74,10 @@ def request(url, *, method='GET', body=None, token=None):
 
 
 class Cloud:
-    def __init__(self, private):
+    def __init__(self, private, recovery_directory=None):
         self.private = private
+        self.recovery_directory = Path(recovery_directory) if recovery_directory else None
+        self.pending_command_archive = None
         self.tokens = {}
 
     @property
@@ -85,6 +90,8 @@ class Cloud:
         return self.rg + '/providers/Microsoft.Compute/virtualMachines/' + self.private['resources']['vmName']
 
     def token(self, audience):
+        if audience in self.tokens and claims(self.tokens[audience]).get('exp', 0) <= time.time() + 120:
+            self.tokens.pop(audience)
         if audience not in self.tokens:
             value = az('account', 'get-access-token', '--subscription', self.private['subscriptionId'],
                        '--resource', audience)['accessToken']
@@ -151,11 +158,47 @@ class Cloud:
         return app
 
     def run_host(self, script, payload, *, timeout=900, name='reconcile'):
-        path = self.vm + '/runCommands/codex-infra-' + name
-        encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+        # Reuse one owned execution resource: Azure permits only 25 per VM,
+        # and can reject updates while already at that limit.
+        if not getattr(self, 'command_path', None):
+            values = self.arm(self.vm + '/runCommands').get('value', [])
+            owned = {v['id'].rsplit('/', 1)[-1]: v for v in values
+                     if v['id'].lower().startswith(self.vm.lower() + '/runcommands/') and
+                     v['id'].rsplit('/', 1)[-1].startswith('codex-infra-')}
+            preferred = next((owned[n]['id'] for n in ['codex-infra-controller', 'codex-infra-plan'] if n in owned), None)
+            self.command_path = preferred or next((v['id'] for v in owned.values()), self.vm + '/runCommands/codex-infra-controller')
+            obsolete = [v for v in owned.values() if v['id'] != self.command_path]
+            if len(values) >= 24:
+                require(obsolete and self.recovery_directory, 'run-command-capacity-needs-administrator-cleanup')
+                archive = {'savedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'records': obsolete}
+                archive_id = hashlib.sha256(json.dumps(archive, sort_keys=True).encode()).hexdigest()
+                # Durable local copy precedes deletion. The wrapper also stores a
+                # root-only VM copy on the next successful execution.
+                atomic(self.recovery_directory / 'run-command-archives' / (archive_id + '.json'), archive)
+                self.pending_command_archive = archive
+                for previous in obsolete: self.arm(previous['id'], 'DELETE')
+        path = self.command_path
+        body_payload = {**payload, **({'_runCommandArchive': self.pending_command_archive} if self.pending_command_archive else {})}
+        encoded = base64.b64encode(gzip.compress(json.dumps(body_payload).encode())).decode()
+        invocation = secrets.token_hex(16)
+        wrapper = """import base64 as _cb, gzip as _cg, json as _cj, os as _co, pathlib as _cp, hashlib as _ch
+_dp = _cj.loads(_cg.decompress(_cb.b64decode(_co.environ['CODEX_VM_PAYLOAD'])))
+_archive = _dp.pop('_runCommandArchive', None)
+if _archive:
+ _data = _cj.dumps(_archive, sort_keys=True).encode()
+ _directory = _cp.Path('/etc/codex-terminal/run-command-archive')
+ _directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+ _file = _directory / (_ch.sha256(_data).hexdigest() + '.json')
+ if not _file.exists():
+  _file.write_bytes(_data)
+  _file.chmod(0o600)
+_co.environ['CODEX_VM_PAYLOAD'] = _cb.b64encode(_cj.dumps(_dp).encode()).decode()
+"""
+        wrapper += 'exec(compile(' + repr(script) + ', "<codex-host>", "exec"), {"__name__":"__main__", "__file__":"<codex-host>"})\n'
+        shell = "#!/bin/bash\nset -eu\numask 077\nprintf 'CODEX_INVOCATION=" + invocation + "\\n'\npython3 - <<'CODEX_HOST'\n" + wrapper + '\nCODEX_HOST\n'
         body = {'location': self.private['location'], 'properties': {
-            'source': {'script': '#!/bin/bash\nset -eu\numask 077\npython3 - <<\'CODEX_HOST\'\n' + script + '\nCODEX_HOST\n'},
-            'asyncExecution': False, 'timeoutInSeconds': timeout, 'treatFailureAsDeploymentFailure': True,
+            'source': {'script': shell},
+            'asyncExecution': False, 'timeoutInSeconds': timeout, 'treatFailureAsDeploymentFailure': False,
             'parameters': [], 'protectedParameters': [{'name': 'CODEX_VM_PAYLOAD', 'value': encoded}]}}
         self.arm(path, 'PUT', body)
         deadline = time.monotonic() + timeout + 180
@@ -163,7 +206,8 @@ class Cloud:
             value = request(ARM + path + '?api-version=2024-11-01&$expand=instanceView', token=self.token(ARM + '/'))
             view = value.get('properties', {}).get('instanceView', {})
             status = view.get('executionState')
-            if status in ['Succeeded', 'Failed', 'Canceled', 'TimedOut']:
+            fresh = ('CODEX_INVOCATION=' + invocation) in view.get('output', '')
+            if status in ['Succeeded', 'Failed', 'Canceled', 'TimedOut'] and fresh:
                 if status != 'Succeeded' or view.get('exitCode') != 0:
                     match = re.search(r'CODEX_OPERATION_FAILED:([a-z-]+):([A-Za-z]+)', view.get('error', ''))
                     allowed = ['protocol', 'plan', 'os-readiness', 'pull-images', 'install-configuration', 'start-services', 'verify-runtime', 'verify-services', 'verify-identity', 'verify-metadata', 'verify-sandbox', 'verify-native', 'native-http', 'native-origin', 'native-create-session', 'native-websocket', 'native-attach', 'native-command', 'adopt', 'apply', 'verify', 'rollback', 'commit']
@@ -171,6 +215,7 @@ class Cloud:
                     raise Failure('host-' + phase + '-failed')
                 match = re.search(r'^CODEX_RESULT=([A-Za-z0-9+/=]+)$', view.get('output', ''), re.M)
                 require(match, 'host-protocol-invalid')
+                self.pending_command_archive = None
                 return json.loads(base64.b64decode(match[1], validate=True))
             time.sleep(5)
         raise Failure('host-operation-timeout')
