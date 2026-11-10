@@ -47,7 +47,7 @@ def diagnose(cloud):
         identifier = job.get('id', '')
         require(identifier.lower().startswith(vault.lower() + '/backupjobs/'), 'diagnostics-scope-rejected')
         p = cloud.arm(identifier, api='2025-02-01')['properties']
-        backup.append({'status': state(p.get('status')), 'startedAt': timestamp(p.get('startTime')),
+        backup.append({'status': state(p.get('status')), 'startedAt': timestamp(p.get('startTime')), 'endedAt': timestamp(p.get('endTime')),
                        'errorCodes': errors(p)})
     deployment = cloud.rg + '/providers/Microsoft.Resources/deployments/codex-infra'
     try:
@@ -68,8 +68,9 @@ def diagnose(cloud):
 if __name__ == '__main__':
     try:
         cloud = Cloud(load_json(Path(sys.argv[1]) / 'private.json', 'private'))
+        cloud.refresh_workload_login(force=True)
         cloud.preflight()
-        print(json.dumps({'status': 'diagnostics-complete', **diagnose(cloud)}))
+        print(json.dumps({'status': 'diagnostics-complete', 'identityRefresh': 'verified', **diagnose(cloud)}))
     except Failure as error:
         print(json.dumps({'status': 'diagnostics-failed', 'code': str(error)})); sys.exit(1)
     except Exception:
