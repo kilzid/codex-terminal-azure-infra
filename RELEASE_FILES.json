@@ -1,5 +1,6 @@
 [
   ".github/workflows/ci.yml",
+  ".github/workflows/diagnostics.yml",
   ".github/workflows/image-update.yml",
   ".github/workflows/production.yml",
   ".gitignore",
@@ -28,6 +29,7 @@
   "operations/cli.py",
   "operations/cloud.py",
   "operations/controller.py",
+  "operations/diagnostics.py",
   "operations/identity.py",
   "operations/preview.py",
   "requirements.txt",
@@ -61,6 +63,7 @@
   "tests/session-manager.test.mjs",
   "tests/test_cloud.py",
   "tests/test_controller.py",
+  "tests/test_diagnostics.py",
   "tests/test_image_update.py",
   "tests/test_preview.py",
   "tests/test_runtime.py",
