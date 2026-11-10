@@ -16,6 +16,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 test('checkpoint, lifecycle, restoration and rollback', async () => {
   try {
     const pane = tmux('new-session', '-d', '-s', 'main', '-n', 'first window', '-c', root, '-P', '-F', '#{pane_id}', '/bin/bash');
+    tmux('resize-window', '-t', 'main:0', '-x', '140', '-y', '40');
     tmux('split-window', '-d', '-h', '-t', pane, '-c', '/tmp', '/bin/bash');
     tmux('new-window', '-d', '-t', 'main:4', '-n', 'fourth', '-c', root, '/bin/bash');
     tmux('select-window', '-t', 'main:0');

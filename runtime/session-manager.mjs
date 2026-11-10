@@ -129,6 +129,8 @@ export function restore() {
       const [, width, height] = w.layout.match(/^[0-9a-f]{4},(\d+)x(\d+),/);
       tmux('resize-window', '-t', target, '-x', width, '-y', height);
       tmux('select-layout', '-t', target, w.layout);
+      // resize-window sets manual sizing; let browser PTY resizes work after attach.
+      tmux('set-option', '-w', '-t', target, 'window-size', 'latest');
       for (let n = 0; n < panes.length; n++) {
         const id = w.panes[n].session;
         if (id && !seen.has(id)) {
