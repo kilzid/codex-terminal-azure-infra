@@ -215,7 +215,8 @@ def verify(payload, *, deep=True):
         PHASE = 'verify-native'
         native = compose('exec', '-T', '-e', 'PROBE_HOST=' + identity['host'], 'terminal',
                          'node', '--input-type=module', '-', data=base64.b64decode(payload['nativeProbe']), timeout=90)
-        assert b'DEPLOYED_TERMBEAM_HTTP_WEBSOCKET_ORIGIN_OK' in native
+        assert any(marker in native for marker in [b'DEPLOYED_TERMBEAM_HTTP_WEBSOCKET_ORIGIN_OK',
+                                                  b'DEPLOYED_REMOBI_HTTP_WEBSOCKET_ORIGIN_PTY_OK'])
     return {name: hashlib.sha256(v['Id'].encode()).hexdigest() for name, v in values.items()}
 
 

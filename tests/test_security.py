@@ -74,6 +74,12 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaises(ValueError):scan(b'account-specific-domain', ['account-specific-domain'])
         scan(b'owner@example.com 127.0.0.1 169.254.169.254 168.63.129.16',[])
 
+    def test_owner_email_exception_does_not_allow_other_personal_addresses(self):
+        scan(b'Author: kilzid <kilzid@gmail.com>', [])
+        for value in [b'other'+b'@gmail.com', b'kilzid+other'+b'@gmail.com', b'kilzid'+b'@gmail.com.invalid']:
+            with self.assertRaises(ValueError): scan(value, [])
+        with self.assertRaises(ValueError): scan(b'kilzid@gmail.com', ['kilzid@gmail.com'])
+
     def test_pr_workflows_never_request_production_identity_or_secrets(self):
         ci=(ROOT/'.github/workflows/ci.yml').read_text()
         self.assertNotIn('id-token:',ci);self.assertNotIn('secrets.',ci)

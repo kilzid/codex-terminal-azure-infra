@@ -4,7 +4,7 @@ All commands use `./codex-infra COMMAND --private /absolute/private/directory`. 
 
 `apply` reads actual infrastructure and managed host files, calculates differences, completes a VM backup before disruptive changes, retains previous runtime configuration and applies only changed components. No-op applications do not rotate credentials, recreate containers or rewrite equivalent configuration. The applied Git commit, lockfile and private configuration fingerprint are stored root-only on the VM. Scheduling runs verification, never automatic adoption of drift.
 
-Keep source branches current with main and use no-reply author and committer emails. GitHub's web rebase merge rewrites committer metadata using the merging account; it is suitable only when that account's GitHub commit email is no-reply. See the procedure below when keeping account settings unchanged.
+Keep source branches current with main and prefer no-reply author and committer emails. The owner-approved address in `tools/privacy.py` is also permitted. GitHub's web rebase merge rewrites committer metadata using the merging account; it is suitable when that account's GitHub commit email is no-reply or explicitly allowed by the privacy scanner. See the procedure below when keeping account settings unchanged.
 
 The production workflow uses a non-cancelling concurrency group with GitHub's buffered queue, so scheduled verification cannot replace a pending deployment. When it obtains the lock it checks out current `main` and runs validation and container tests against that actual revision. A queued old workflow therefore reconciles the latest desired revision. No PR, fork PR or feature branch can enter the production environment or obtain its Azure identity.
 
