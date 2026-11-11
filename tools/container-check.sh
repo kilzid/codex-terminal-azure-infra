@@ -7,6 +7,14 @@ sudo apt-get install -y -qq apparmor apparmor-utils >/dev/null
 sudo apparmor_parser -r runtime/apparmor.profile
 mkdir -p "$check_root/workspace" "$check_root/config"
 printf '%s\n' 'sandbox_mode = "workspace-write"' 'approval_policy = "on-request"' > "$check_root/config/config.toml"
+cat runtime/session-hooks.toml > "$check_root/real-hooks.toml"
+cat >> "$check_root/real-hooks.toml" <<'HOOKS'
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "node /tmp/real-codex-restore.mjs observe"
+timeout = 3
+HOOKS
 sudo chown -R 1000:1000 "$check_root"
 image=$(python3 -c 'import json;print(json.load(open("images.lock.json"))["terminal"])')
 docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
@@ -33,14 +41,6 @@ for phase in prepare verify; do
     "$image" node /tmp/container-restore.mjs "$phase"
 done
 # Exercise the real CLI and managed hooks across a second actual replacement.
-cat runtime/session-hooks.toml > "$check_root/real-hooks.toml"
-cat >> "$check_root/real-hooks.toml" <<'HOOKS'
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "node /tmp/real-codex-restore.mjs observe"
-timeout = 3
-HOOKS
 for phase in prepare verify; do
   docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
     --memory 1280m --memory-swap 1280m --cpus 0.9 \
