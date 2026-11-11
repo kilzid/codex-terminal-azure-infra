@@ -48,7 +48,7 @@ def diagnose(cloud):
         require(identifier.lower().startswith(vault.lower() + '/backupjobs/'), 'diagnostics-scope-rejected')
         p = cloud.arm(identifier, api='2025-02-01')['properties']
         backup.append({'status': state(p.get('status')), 'startedAt': timestamp(p.get('startTime')), 'endedAt': timestamp(p.get('endTime')),
-                       'errorCodes': errors(p)})
+                       'errorCodes': errors(p), 'onDemand': p.get('isUserTriggered') is True})
     deployment = cloud.rg + '/providers/Microsoft.Resources/deployments/codex-infra'
     try:
         p = cloud.arm(deployment, api='2025-04-01').get('properties', {})
@@ -61,7 +61,7 @@ def diagnose(cloud):
         op = operation.get('properties', {})
         if op.get('provisioningState') != 'Succeeded':
             summary.append({'status': state(op.get('provisioningState')), 'errorCodes': errors(op)})
-    return {'backupJobs': backup, 'deployment': {'status': state(p.get('provisioningState')),
+    return {'backupJobs': backup, 'resumableBackup': cloud.pending_backup() is not None, 'deployment': {'status': state(p.get('provisioningState')),
             'errorCodes': errors(p), 'unfinishedOperations': summary[:20]}}
 
 
