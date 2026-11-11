@@ -24,7 +24,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     environment: production
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write

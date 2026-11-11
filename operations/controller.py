@@ -276,12 +276,7 @@ class Controller:
         plan = self.plan()
         # First adoption is a separately verified no-op, never an implicit reconcile.
         require(plan['host'].get('applied') is not None or self.private['profile'] == 'deployment', 'adoption-required-before-apply')
-        disruptive = plan['infrastructure'] or plan['host']['changed'] or plan['host'].get('serviceDrift') or plan['callbackChanged']
-        terminal_image_only = (plan['host'].get('terminalImageOnly', False)
-                               and not plan['infrastructure'] and not plan['callbackChanged'])
-        # Routine terminal image updates rely on the scheduled daily VM backup.
-        # Keep the existing pre-change backup for infrastructure and other runtime changes.
-        if disruptive and not terminal_image_only: self.cloud.backup(self.settings['backup']['dailyRetentionDays'])
+        # Deployments rely on scheduled VM backups; do not trigger or wait for an on-demand backup.
         if plan['infrastructure']: self.apply_infrastructure()
         if plan['budgetChanged']: self.cloud.arm(self.budget_path, 'PUT', {'properties': self.desired_budget()}, api='2024-08-01')
         app = self.cloud.identity()
@@ -332,7 +327,6 @@ class Controller:
     def rollback(self, revision=None):
         self.cloud.preflight()
         self.cloud.mfa()
-        self.cloud.backup(self.settings['backup']['dailyRetentionDays'])
         result = self.host('rollback', revision=revision)
         registration = self.cloud.identity()
         if registration['web']['redirectUris'] != [result['callback']]:
