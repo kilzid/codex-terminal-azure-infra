@@ -33,6 +33,14 @@ for phase in prepare verify; do
     "$image" node /tmp/container-restore.mjs "$phase"
 done
 # Exercise the real CLI and managed hooks across a second actual replacement.
+cat runtime/session-hooks.toml > "$check_root/real-hooks.toml"
+cat >> "$check_root/real-hooks.toml" <<'HOOKS'
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "node /tmp/real-codex-restore.mjs observe"
+timeout = 3
+HOOKS
 for phase in prepare verify; do
   docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
     --memory 1280m --memory-swap 1280m --cpus 0.9 \
@@ -41,7 +49,7 @@ for phase in prepare verify; do
     -v "$check_root/workspace:/workspace" -v "$check_root/config:/home/node/.codex" \
     -e CODEX_HOME=/home/node/.codex/real-restore-test \
     -v "$PWD/runtime/session-manager.mjs:/opt/codex-session.mjs:ro" \
-    -v "$PWD/runtime/session-hooks.toml:/etc/codex/requirements.toml:ro" \
+    -v "$check_root/real-hooks.toml:/etc/codex/requirements.toml:ro" \
     -v "$PWD/tests/real-codex-restore.mjs:/tmp/real-codex-restore.mjs:ro" \
     "$image" node /tmp/real-codex-restore.mjs "$phase"
 done
