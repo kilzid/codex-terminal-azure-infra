@@ -1,0 +1,27 @@
+name: Cancel obsolete Production
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cancel-obsolete-production.yml
+      - tools/cancel-obsolete-production.py
+permissions:
+  contents: read
+jobs:
+  cancel:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Cancel the single obsolete Production controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/cancel-obsolete-production.py

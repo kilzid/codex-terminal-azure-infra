@@ -1,4 +1,5 @@
 [
+  ".github/workflows/cancel-obsolete-production.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/diagnostics.yml",
   ".github/workflows/image-update.yml",
@@ -61,6 +62,7 @@
   "tests/container-restore.mjs",
   "tests/native-smoke.mjs",
   "tests/session-manager.test.mjs",
+  "tests/test_cancellation.py",
   "tests/test_cloud.py",
   "tests/test_controller.py",
   "tests/test_diagnostics.py",
@@ -68,6 +70,7 @@
   "tests/test_preview.py",
   "tests/test_runtime.py",
   "tests/test_security.py",
+  "tools/cancel-obsolete-production.py",
   "tools/check.sh",
   "tools/ci-private.py",
   "tools/container-check.sh",
