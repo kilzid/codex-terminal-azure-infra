@@ -58,20 +58,20 @@ export function hook(event, pid = codexPid()) {
   if (!panePattern.test(pane || '') || !idPattern.test(event.session_id || '') || fs.existsSync(frozen)) return;
   if (tmux('display-message', '-p', '-t', pane, '#{session_name}') !== 'main') return;
   if (event.hook_event_name === 'SessionStart' && pid && descendant(pid, Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}')))) {
-    tmux('set-option', '-p', '-t', pane, '@codex_session', event.session_id);
-    tmux('set-option', '-p', '-t', pane, '@codex_pid', String(pid));
-  } else if (event.hook_event_name === 'SessionEnd' && tmux('display-message', '-p', '-t', pane, '#{@codex_session}') === event.session_id) {
-    tmux('set-option', '-pu', '-t', pane, '@codex_session');
-    tmux('set-option', '-pu', '-t', pane, '@codex_pid');
+    tmux('set-option', '-p', '-t', pane, '@ct_restore_thread_id', event.session_id);
+    tmux('set-option', '-p', '-t', pane, '@ct_restore_pid', String(pid));
+  } else if (event.hook_event_name === 'SessionEnd' && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_thread_id}') === event.session_id) {
+    tmux('set-option', '-pu', '-t', pane, '@ct_restore_thread_id');
+    tmux('set-option', '-pu', '-t', pane, '@ct_restore_pid');
   }
 }
 export function snapshot() {
   const get = (target, field) => tmux('display-message', '-p', '-t', target, '#{' + field + '}');
   const windows = tmux('list-windows', '-t', 'main', '-F', '#{window_id}').split('\n').map(wid => {
     const panes = tmux('list-panes', '-t', wid, '-F', '#{pane_id}').split('\n').map(pane => {
-      const session = get(pane, '@codex_session');
+      const session = get(pane, '@ct_restore_thread_id');
       return { cwd: get(pane, 'pane_current_path'),
-        session: idPattern.test(session) && descendant(Number(get(pane, '@codex_pid')), Number(get(pane, 'pane_pid'))) ? session : null,
+        session: idPattern.test(session) && descendant(Number(get(pane, '@ct_restore_pid')), Number(get(pane, 'pane_pid'))) ? session : null,
         active: get(pane, 'pane_active') === '1' };
     });
     return { index: Number(get(wid, 'window_index')), name: get(wid, 'window_name'),
