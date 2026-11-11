@@ -126,8 +126,25 @@ export function resumeArgs(id) {
   return ['resume', '--dangerously-bypass-approvals-and-sandbox', id];
 }
 export function resumeCommand(id) {
-  return ['codex', ...resumeArgs(id)].map(quote).join(' ') +
+  resumeArgs(id);
+  return [process.execPath, fileURLToPath(import.meta.url), 'resume', id].map(quote).join(' ') +
     " || printf '\\nConversation could not be resumed; shell is ready.\\n'; exec /bin/bash";
+}
+export function resume(id) {
+  const child = spawn('codex', resumeArgs(id), { stdio: 'inherit' });
+  // A resumed TUI may wait for input before emitting SessionStart. Bind only
+  // the checkpoint's explicit ID to the process we launch, without input.
+  if (child.pid) hook({ hook_event_name: 'SessionStart', session_id: id }, child.pid);
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
+  child.on('error', () => { process.exitCode = 1; });
+  child.on('exit', code => {
+    try {
+      const pane = process.env.TMUX_PANE;
+      if (panePattern.test(pane || '') && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_pid}') === String(child.pid))
+        hook({ hook_event_name: 'SessionEnd', session_id: id });
+    } catch {}
+    process.exitCode = code ?? 1;
+  });
 }
 export function restore() {
   try { tmux('has-session', '-t', '=main'); return false; } catch {}
@@ -204,6 +221,7 @@ if (process.argv[1] === '-' || (process.argv[1] && fileURLToPath(import.meta.url
       case 'freeze': checkpoint(true); break;
       case 'release': release(); break;
       case 'restore': restore(); break;
+      case 'resume': resume(process.argv[3]); break;
       default: supervise();
     }
   } catch { console.error('Terminal session operation failed.'); process.exitCode = 1; }
