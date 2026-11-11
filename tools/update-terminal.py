@@ -179,7 +179,7 @@ class Updater:
                 'body': 'Update only the terminal image to `' + IMAGE + '@' + digest + '`.\n\n'
                         'The daily image updater merges this PR only after Validate passes on its exact head. '
                         'Production then applies and verifies the VM. Daily backups cover workspace data; '
-                        'a terminal-image-only update skips an extra on-demand backup.'})
+                        'deployments do not trigger or wait for an extra on-demand backup.'})
         for old in open_prs:
             if old['number'] != pr['number'] and managed_pr(old, self.api.repository):
                 self.api('/pulls/' + str(old['number']), 'PATCH', {'state': 'closed'})

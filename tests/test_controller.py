@@ -54,15 +54,6 @@ class ControllerTests(unittest.TestCase):
                 self.assertFalse(Path(param[1:]).exists())
             self.assertEqual(json.loads((c.directory/'what-if.json').read_text())['status'],'Succeeded')
 
-    def test_backup_failure_prevents_infrastructure_callback_and_runtime_mutation(self):
-        c=self.controller()
-        c.plan=Mock(return_value={'infrastructure':[{'changeType':'Modify'}],
-            'host':{'applied':{'commit':'synthetic'},'changed':['compose.json'],'before':{}},
-            'budgetChanged':False,'callbackChanged':False})
-        c.host=Mock();c.deployment=Mock();c.cloud.backup.side_effect=Failure('backup-failed')
-        with self.assertRaises(Failure):c.apply()
-        c.host.assert_not_called();c.deployment.assert_not_called();c.cloud.graph.assert_not_called()
-
     def test_noop_apply_neither_backs_up_nor_modifies_infrastructure_or_identity(self):
         c=self.controller()
         c.plan=Mock(return_value={'infrastructure':[],'host':{'applied':{'commit':'synthetic'},'changed':[],'before':{}},
@@ -87,16 +78,38 @@ class ControllerTests(unittest.TestCase):
         c.public_verify.assert_called_once()
         self.assertEqual([v.args[0] for v in c.host.call_args_list],['apply','commit'])
 
-    def test_infrastructure_or_callback_change_still_backs_up_with_terminal_update(self):
-        for infrastructure, callback in [([{'changeType':'Modify'}],False),([],True)]:
-            with self.subTest(callback=callback):
-                c=self.controller()
-                c.plan=Mock(return_value={'infrastructure':infrastructure,
-                    'host':{'applied':{'commit':'synthetic'},'changed':['compose.json'],'before':{},'terminalImageOnly':True},
-                    'budgetChanged':False,'callbackChanged':callback})
-                c.host=Mock(); c.cloud.backup.side_effect=Failure('backup-failed')
-                with self.assertRaises(Failure): c.apply()
-                c.cloud.backup.assert_called_once(); c.host.assert_not_called()
+    def test_all_deployment_change_types_skip_on_demand_backup_and_still_verify(self):
+        for infrastructure, callback, changed, drift in [
+                ([{'changeType': 'Modify'}], False, ['compose.json'], []),
+                ([], True, ['compose.json'], []),
+                ([], False, ['session-manager.mjs'], []),
+                ([], False, [], ['terminal'])]:
+            with self.subTest(infrastructure=infrastructure, callback=callback, changed=changed, drift=drift):
+                c = self.controller()
+                c.plan = Mock(return_value={'infrastructure': infrastructure,
+                    'host': {'applied': {'commit': 'synthetic'}, 'changed': changed, 'before': {}, 'serviceDrift': drift},
+                    'budgetChanged': False, 'callbackChanged': callback})
+                c.host = Mock(return_value={'status': 'applied', 'changed': changed, 'affected': ['terminal']})
+                c.apply_infrastructure = Mock()
+                c.cloud.backup.side_effect = Failure('backup-must-not-be-called')
+                c.cloud.identity.return_value = {'web': {'redirectUris': ['https://terminal.example.com/oauth2/callback']}}
+                self.assertEqual(c.apply()['status'], 'applied')
+                c.cloud.backup.assert_not_called()
+                c.public_verify.assert_called_once()
+                self.assertEqual([call.args[0] for call in c.host.call_args_list], ['apply', 'commit'])
+                self.assertEqual(c.apply_infrastructure.call_count, int(bool(infrastructure)))
+
+    def test_explicit_runtime_rollback_does_not_wait_for_a_backup(self):
+        c = self.controller()
+        c.cloud.backup.side_effect = Failure('backup-must-not-be-called')
+        c.cloud.identity.return_value = {'web': {'redirectUris': ['https://terminal.example.com/oauth2/callback']}}
+        c.host = Mock(return_value={'status': 'rolled-back', 'affected': ['terminal'],
+            'hostname': 'terminal.example.com', 'callback': 'https://terminal.example.com/oauth2/callback'})
+        with tempfile.TemporaryDirectory() as directory:
+            c.directory = Path(directory)
+            self.assertEqual(c.rollback()['status'], 'rolled-back')
+        c.cloud.backup.assert_not_called()
+        c.public_verify.assert_called_once_with(hostname='terminal.example.com')
 
     def test_public_health_failure_rolls_back_runtime_and_callback(self):
         c=self.controller();c.plan=Mock(return_value={'infrastructure':[],
@@ -109,7 +122,7 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(Failure):c.apply()
         self.assertEqual([v.args[0] for v in c.host.call_args_list],['apply','rollback'])
         self.assertEqual(c.cloud.graph.call_args.args[-1],{'web':previous})
-        c.cloud.backup.assert_called_once()
+        c.cloud.backup.assert_not_called()
 
     def test_failed_resize_restores_previous_size_and_starts_vm(self):
         c=self.controller();c.settings['vmSize']='Standard_B2als_v2'
