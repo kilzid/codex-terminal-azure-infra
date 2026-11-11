@@ -5,6 +5,12 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 const phase = process.argv[2];
+if (phase === 'observe') {
+  const event = JSON.parse(fs.readFileSync(0, 'utf8'));
+  fs.appendFileSync('/home/node/.codex/real-restore-test/hook-events.jsonl',
+    JSON.stringify({ ...event, observedHome: process.env.CODEX_HOME }) + '\n', { mode: 0o600 });
+  process.exit(0);
+}
 assert.ok(['prepare', 'verify'].includes(phase));
 const home = process.env.CODEX_HOME;
 assert.ok(home && home.endsWith('/real-restore-test'));
@@ -77,15 +83,17 @@ try {
     tmux('send-keys', '-t', 'main', 'C-m');
     await pause(600); tmux('send-keys', '-t', 'main', 'C-m');
     await until(() => tmux('capture-pane', '-p', '-t', 'main').includes(text) && snapshot().windows[0].panes[0].session, 'saved Codex reply and lifecycle mapping');
-    const saved = snapshot();
-    const id = saved.windows[0].panes[0].session;
-    assert.ok(id, 'a conversation is mapped');
     const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
       entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
-    const transcripts = walk(path.join(home, 'sessions')).filter(file => path.basename(file).includes(id));
-    assert.equal(transcripts.length, 1, 'mapped conversation ID identifies a durable Codex transcript');
-    const metadata = JSON.parse(fs.readFileSync(transcripts[0], 'utf8').split('\n')[0]);
-    assert.equal(metadata.payload.id, id);
+    let id;
+    await until(() => {
+      id = snapshot().windows[0].panes[0].session;
+      if (!id || !fs.existsSync(path.join(home, 'sessions'))) return false;
+      const transcripts = walk(path.join(home, 'sessions')).filter(file => path.basename(file).includes(id));
+      if (transcripts.length !== 1) return false;
+      const raw = fs.readFileSync(transcripts[0], 'utf8');
+      try { return JSON.parse(raw.split('\n')[0]).payload.id === id && raw.includes(text); } catch { return false; }
+    }, 'durable transcript for the exact mapped conversation');
     checkpoint(true);
     fs.writeFileSync(path.join(home, 'expected-thread.json'), JSON.stringify({ id }), { mode: 0o600 });
     console.log('REAL_CODEX_CONVERSATION_CHECKPOINT_OK');
@@ -102,6 +110,14 @@ try {
   }
 } catch (error) {
   try { console.error(JSON.stringify({ phase, codexRunning: codexRunning(), mapped: Boolean(get('@ct_restore_thread_id')),
-    priorReplyVisible: tmux('capture-pane', '-p', '-t', 'main').includes(text) })); } catch {}
+    priorReplyVisible: tmux('capture-pane', '-p', '-t', 'main').includes(text),
+    suppliedTranscript: Boolean(get('@ct_restore_transcript')),
+    suppliedTranscriptExists: fs.existsSync(get('@ct_restore_transcript')),
+    hookEvents: fs.existsSync(path.join(home, 'hook-events.jsonl')) ? fs.readFileSync(path.join(home, 'hook-events.jsonl'), 'utf8').trim().split('\n').map(line => {
+      const event = JSON.parse(line);
+      return { fields: Object.keys(event), event: event.hook_event_name, source: event.source,
+        transcriptSupplied: Boolean(event.transcript_path), transcriptExists: fs.existsSync(event.transcript_path || ''),
+        homeMatches: event.observedHome === home };
+    }) : [] })); } catch {}
   throw error;
 } finally { server.closeAllConnections(); server.close(); }
