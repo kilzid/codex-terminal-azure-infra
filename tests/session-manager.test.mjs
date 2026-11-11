@@ -40,6 +40,9 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     fs.writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: 'conversation_durable' } }) + '\n');
     manager.hook({ hook_event_name: 'SessionStart', session_id: 'runtime_id', transcript_path: transcript }, pid);
     assert.equal(manager.snapshot().windows[0].panes[0].session, 'conversation_durable');
+    manager.hook({ hook_event_name: 'SessionStart', session_id: 'ephemeral_id', transcript_path: '' }, pid);
+    manager.hook({ hook_event_name: 'SessionEnd', session_id: 'ephemeral_id' });
+    assert.equal(manager.snapshot().windows[0].panes[0].session, 'conversation_durable', 'ephemeral lifecycle cannot replace or end a durable conversation');
     assert.equal(manager.conversationId('runtime_id', '/etc/passwd'), null, 'event paths stay inside saved sessions');
     manager.hook({ hook_event_name: 'SessionEnd', session_id: 'runtime_id' });
     assert.equal(get(pane, '@ct_restore_thread_id'), '', 'end event clears its resolved conversation');

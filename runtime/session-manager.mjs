@@ -76,6 +76,9 @@ export function hook(event, pid = codexPid()) {
   if (!panePattern.test(pane || '') || !idPattern.test(event.session_id || '') || fs.existsSync(frozen)) return;
   if (tmux('display-message', '-p', '-t', pane, '#{session_name}') !== 'main') return;
   if (event.hook_event_name === 'SessionStart' && pid && descendant(pid, Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}')))) {
+    // The CLI also starts ephemeral sessions in this process. They explicitly
+    // supply an empty transcript path and must not replace a durable mapping.
+    if (Object.hasOwn(event, 'transcript_path') && !event.transcript_path) return;
     tmux('set-option', '-p', '-t', pane, '@ct_restore_thread_id', conversationId(event.session_id, event.transcript_path) || '');
     tmux('set-option', '-p', '-t', pane, '@ct_restore_hook_id', event.session_id);
     tmux('set-option', '-p', '-t', pane, '@ct_restore_transcript', event.transcript_path || '');
