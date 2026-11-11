@@ -76,7 +76,7 @@ try {
     tmux('send-keys', '-t', 'main', '-l', 'Local restoration test. Do not execute tools.');
     tmux('send-keys', '-t', 'main', 'C-m');
     await pause(600); tmux('send-keys', '-t', 'main', 'C-m');
-    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes(text) && get('@ct_restore_thread_id'), 'saved Codex reply and lifecycle mapping');
+    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes(text) && snapshot().windows[0].panes[0].session, 'saved Codex reply and lifecycle mapping');
     const saved = snapshot();
     const id = saved.windows[0].panes[0].session;
     assert.ok(id, 'a conversation is mapped');
@@ -93,7 +93,7 @@ try {
     const expected = JSON.parse(fs.readFileSync(path.join(home, 'expected-thread.json'), 'utf8'));
     assert.equal(restore(), true);
     // No input is sent during verification: the restored conversation must wait.
-    await until(() => codexRunning() && get('@ct_restore_thread_id') === expected.id &&
+    await until(() => codexRunning() && snapshot().windows[0].panes[0].session === expected.id &&
       tmux('capture-pane', '-p', '-t', 'main').includes(text), 'exact real Codex conversation resume');
     await pause(1000);
     assert.equal(requests, 0, 'automatic restoration must not submit a prompt or run inference');

@@ -34,6 +34,16 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     assert.equal(get(pane, '@ct_restore_thread_id'), '');
     assert.equal(get(pane, '@codex_session'), 'runtime_only_id', 'ending a conversation leaves native metadata alone');
     manager.hook({ hook_event_name: 'SessionStart', session_id: 'session_exact' }, pid);
+    const transcripts = path.join(root, 'sessions'); fs.mkdirSync(transcripts);
+    const transcript = path.join(transcripts, 'rollout-conversation_durable.jsonl');
+    assert.equal(manager.conversationId('runtime_id', transcript), null, 'pending transcript is never guessed');
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: 'conversation_durable' } }) + '\n');
+    manager.hook({ hook_event_name: 'SessionStart', session_id: 'runtime_id', transcript_path: transcript }, pid);
+    assert.equal(manager.snapshot().windows[0].panes[0].session, 'conversation_durable');
+    assert.equal(manager.conversationId('runtime_id', '/etc/passwd'), null, 'event paths stay inside saved sessions');
+    manager.hook({ hook_event_name: 'SessionEnd', session_id: 'runtime_id' });
+    assert.equal(get(pane, '@ct_restore_thread_id'), '', 'end event clears its resolved conversation');
+    manager.hook({ hook_event_name: 'SessionStart', session_id: 'session_exact' }, pid);
     manager.checkpoint();
     const file = path.join(state, 'checkpoint.json');
     const saved = JSON.parse(fs.readFileSync(file));
