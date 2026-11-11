@@ -77,7 +77,9 @@ try {
   if (phase === 'prepare') {
     tmux('new-session', '-d', '-s', 'main', '-x', '120', '-y', '40', '-c', '/workspace',
       'codex --dangerously-bypass-approvals-and-sandbox');
-    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes('Ask Codex'), 'Codex input readiness');
+    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes('Ask Codex') &&
+      snapshot().windows[0].panes[0].session, 'Codex input and durable lifecycle readiness');
+    await pause(1000);
     assert.ok(get('socket_path').startsWith(tmp + '/'), 'only the isolated test pane receives seed input');
     tmux('send-keys', '-t', 'main', '-l', 'Local restoration test. Do not execute tools.');
     tmux('send-keys', '-t', 'main', 'C-m');
@@ -110,6 +112,7 @@ try {
   }
 } catch (error) {
   try { console.error(JSON.stringify({ phase, codexRunning: codexRunning(), mapped: Boolean(get('@ct_restore_thread_id')),
+    syntheticScreen: tmux('capture-pane', '-p', '-t', 'main'),
     priorReplyVisible: tmux('capture-pane', '-p', '-t', 'main').includes(text),
     suppliedTranscript: Boolean(get('@ct_restore_transcript')),
     suppliedTranscriptExists: fs.existsSync(get('@ct_restore_transcript')),
