@@ -53,23 +53,45 @@ function codexPid() {
   }
   return 0;
 }
+export function conversationId(sessionId, transcriptPath) {
+  // Use only the transcript supplied by this lifecycle event, never the latest file.
+  if (!transcriptPath) return idPattern.test(sessionId || '') ? sessionId : null;
+  let fd;
+  try {
+    const sessions = fs.realpathSync(path.join(path.dirname(state), 'sessions')) + path.sep;
+    const file = fs.realpathSync(transcriptPath);
+    if (!file.startsWith(sessions)) return null;
+    fd = fs.openSync(file, 'r');
+    const buffer = Buffer.alloc(1024 * 1024);
+    const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    const first = buffer.subarray(0, size).toString('utf8').split('\n')[0];
+    const metadata = JSON.parse(first);
+    const id = metadata.payload?.id;
+    return metadata.type === 'session_meta' && idPattern.test(id || '') && path.basename(file).includes(id) ? id : null;
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
 export function hook(event, pid = codexPid()) {
   const pane = process.env.TMUX_PANE;
   if (!panePattern.test(pane || '') || !idPattern.test(event.session_id || '') || fs.existsSync(frozen)) return;
   if (tmux('display-message', '-p', '-t', pane, '#{session_name}') !== 'main') return;
   if (event.hook_event_name === 'SessionStart' && pid && descendant(pid, Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}')))) {
-    tmux('set-option', '-p', '-t', pane, '@ct_restore_thread_id', event.session_id);
+    tmux('set-option', '-p', '-t', pane, '@ct_restore_thread_id', conversationId(event.session_id, event.transcript_path) || '');
+    tmux('set-option', '-p', '-t', pane, '@ct_restore_hook_id', event.session_id);
+    tmux('set-option', '-p', '-t', pane, '@ct_restore_transcript', event.transcript_path || '');
     tmux('set-option', '-p', '-t', pane, '@ct_restore_pid', String(pid));
-  } else if (event.hook_event_name === 'SessionEnd' && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_thread_id}') === event.session_id) {
+  } else if (event.hook_event_name === 'SessionEnd' && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_hook_id}') === event.session_id) {
     tmux('set-option', '-pu', '-t', pane, '@ct_restore_thread_id');
     tmux('set-option', '-pu', '-t', pane, '@ct_restore_pid');
+    tmux('set-option', '-pu', '-t', pane, '@ct_restore_hook_id');
+    tmux('set-option', '-pu', '-t', pane, '@ct_restore_transcript');
   }
 }
 export function snapshot() {
   const get = (target, field) => tmux('display-message', '-p', '-t', target, '#{' + field + '}');
   const windows = tmux('list-windows', '-t', 'main', '-F', '#{window_id}').split('\n').map(wid => {
     const panes = tmux('list-panes', '-t', wid, '-F', '#{pane_id}').split('\n').map(pane => {
-      const session = get(pane, '@ct_restore_thread_id');
+      const session = conversationId(get(pane, '@ct_restore_thread_id') || get(pane, '@ct_restore_hook_id'), get(pane, '@ct_restore_transcript'));
       return { cwd: get(pane, 'pane_current_path'),
         session: idPattern.test(session) && descendant(Number(get(pane, '@ct_restore_pid')), Number(get(pane, 'pane_pid'))) ? session : null,
         active: get(pane, 'pane_active') === '1' };
