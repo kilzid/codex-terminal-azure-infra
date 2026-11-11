@@ -61,6 +61,7 @@
   "schemas/runtime-secrets.schema.json",
   "tests/container-restore.mjs",
   "tests/native-smoke.mjs",
+  "tests/real-codex-restore.mjs",
   "tests/session-manager.test.mjs",
   "tests/test_cancellation.py",
   "tests/test_cloud.py",

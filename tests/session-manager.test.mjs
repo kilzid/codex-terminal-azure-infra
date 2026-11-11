@@ -24,11 +24,15 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     process.env.TMUX_PANE = pane;
     const pid = Number(get(pane, 'pane_pid'));
     manager.hook({ hook_event_name: 'SessionStart', session_id: 'session_exact' }, pid);
-    assert.equal(get(pane, '@codex_session'), 'session_exact');
+    assert.equal(get(pane, '@ct_restore_thread_id'), 'session_exact');
+    // Codex/terminal integrations can overwrite their own pane metadata independently.
+    tmux('set-option', '-p', '-t', pane, '@codex_session', 'runtime_only_id');
+    tmux('set-option', '-p', '-t', pane, '@codex_pid', '0');
     manager.hook({ hook_event_name: 'SessionEnd', session_id: 'old_session' });
-    assert.equal(get(pane, '@codex_session'), 'session_exact');
+    assert.equal(get(pane, '@ct_restore_thread_id'), 'session_exact');
     manager.hook({ hook_event_name: 'SessionEnd', session_id: 'session_exact' });
-    assert.equal(get(pane, '@codex_session'), '');
+    assert.equal(get(pane, '@ct_restore_thread_id'), '');
+    assert.equal(get(pane, '@codex_session'), 'runtime_only_id', 'ending a conversation leaves native metadata alone');
     manager.hook({ hook_event_name: 'SessionStart', session_id: 'session_exact' }, pid);
     manager.checkpoint();
     const file = path.join(state, 'checkpoint.json');
@@ -42,7 +46,7 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     assert.throws(() => manager.validate(invalid));
     manager.checkpoint(true);
     manager.hook({ hook_event_name: 'SessionEnd', session_id: 'session_exact' });
-    assert.equal(get(pane, '@codex_session'), 'session_exact', 'frozen lifecycle ignored');
+    assert.equal(get(pane, '@ct_restore_thread_id'), 'session_exact', 'frozen lifecycle ignored');
     assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(saved));
     // Simulate container replacement: tmux and ephemeral marker disappear, volumes stay.
     tmux('kill-server'); fs.rmSync(path.join(root, 'codex-terminal-frozen'));
