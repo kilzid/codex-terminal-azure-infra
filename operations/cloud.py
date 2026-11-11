@@ -265,18 +265,56 @@ _co.environ['CODEX_VM_PAYLOAD'] = _cb.b64encode(_cj.dumps(_dp).encode()).decode(
         self.tokens.clear()
         self.workload_login_at = now
 
+    def pending_backup(self):
+        # Resume a still-running on-demand backup after a controller interruption.
+        # A friendly job name alone is ambiguous: verify the protected VM inventory.
+        p = self.private
+        vault = self.rg + '/providers/Microsoft.RecoveryServices/vaults/' + p['resources']['vaultName']
+        inventory = self.arm(vault + '/backupProtectedItems', api='2025-02-01')
+        require(not inventory.get('nextLink'), 'backup-inventory-incomplete')
+        matching = []
+        vm_name = p['resources']['vmName'].lower()
+        for item in inventory.get('value', []):
+            properties = item.get('properties', {})
+            source = properties.get('sourceResourceId') or properties.get('virtualMachineId') or ''
+            if source.rsplit('/', 1)[-1].lower() == vm_name:
+                matching.append(source.lower())
+        require(matching == [self.vm.lower()], 'backup-protected-vm-mismatch')
+        jobs = self.arm(vault + '/backupJobs', api='2025-02-01')
+        require(not jobs.get('nextLink'), 'backup-job-inventory-incomplete')
+        active = []
+        for job in jobs.get('value', []):
+            properties = job.get('properties', {})
+            if (properties.get('entityFriendlyName', '').lower() == vm_name and
+                    properties.get('operation') == 'Backup' and properties.get('isUserTriggered') is True and
+                    properties.get('status') in ['InProgress', 'Pending']):
+                identifier = job.get('id', '')
+                require(identifier.lower().startswith(vault.lower() + '/backupjobs/'), 'backup-job-scope-mismatch')
+                active.append(identifier.rsplit('/', 1)[-1])
+        require(len(active) <= 1, 'backup-jobs-ambiguous')
+        return active[0] if active else None
+
     def backup(self, retention_days):
         p = self.private
         until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=retention_days)).strftime('%d-%m-%Y')
         self.refresh_workload_login()
-        result = az('backup', 'protection', 'backup-now', '--resource-group', p['resourceGroup'],
-                    '--vault-name', p['resources']['vaultName'], '--container-name', p['resources']['backupContainer'],
-                    '--item-name', p['resources']['backupItem'], '--backup-management-type', 'AzureIaasVM',
-                    '--retain-until', until, '--subscription', p['subscriptionId'])
-        job_id = result.get('name') or result.get('properties', {}).get('jobId')
+        job_id = self.pending_backup()
+        resumed = job_id is not None
+        if not resumed:
+            result = az('backup', 'protection', 'backup-now', '--resource-group', p['resourceGroup'],
+                        '--vault-name', p['resources']['vaultName'], '--container-name', p['resources']['backupContainer'],
+                        '--item-name', p['resources']['backupItem'], '--backup-management-type', 'AzureIaasVM',
+                        '--retain-until', until, '--subscription', p['subscriptionId'])
+            job_id = result.get('name') or result.get('properties', {}).get('jobId')
         require(job_id, 'backup-job-missing')
-        deadline = time.monotonic() + 3600
-        while time.monotonic() < deadline:
+        print(json.dumps({'status': 'waiting-for-backup', 'resumed': resumed}), flush=True)
+        deadline = time.monotonic() + 10800
+        last_report = deadline - 10800
+        while (now := time.monotonic()) < deadline:
+            if now - last_report >= 300:
+                print(json.dumps({'status': 'waiting-for-backup',
+                                  'elapsedMinutes': int((now - (deadline - 10800)) / 60)}), flush=True)
+                last_report = now
             self.refresh_workload_login()
             job = az('backup', 'job', 'show', '--resource-group', p['resourceGroup'], '--vault-name', p['resources']['vaultName'],
                      '--name', job_id, '--subscription', p['subscriptionId'])

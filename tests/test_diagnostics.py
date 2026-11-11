@@ -12,6 +12,7 @@ class DiagnosticsTests(unittest.TestCase):
         cloud = Mock(rg='/subscriptions/synthetic/resourceGroups/private-group',
                      private={'resources': {'vaultName': 'private-vault'}})
         vault = cloud.rg + '/providers/Microsoft.RecoveryServices/vaults/private-vault'
+        cloud.pending_backup.return_value = None
         cloud.arm.side_effect = [
             {'value': [{'id': vault + '/backupJobs/private-job', 'properties': {'startTime': '2026-11-10T20:00:00Z'}}]},
             {'properties': {'status': 'Failed', 'startTime': '2026-11-10T20:00:00Z', 'entityFriendlyName': 'private-vm',

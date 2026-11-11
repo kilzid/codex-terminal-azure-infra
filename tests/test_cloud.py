@@ -103,7 +103,7 @@ class WorkloadRefreshTests(unittest.TestCase):
         self.private = {'repositoryId': 1, 'repositoryOwnerId': 2, 'deploymentClientId': 'synthetic-client',
                         'tenantId': 'synthetic-tenant', 'subscriptionId': 'synthetic-subscription',
                         'resourceGroup': 'synthetic-group', 'resources': {'vaultName': 'synthetic-vault',
-                        'backupContainer': 'synthetic-container', 'backupItem': 'synthetic-item'}}
+                        'backupContainer': 'synthetic-container', 'backupItem': 'synthetic-item', 'vmName': 'synthetic-vm'}}
         self.env = {'GITHUB_ACTIONS': 'true', 'ACTIONS_ID_TOKEN_REQUEST_URL':
                     'https://pipelines.actions.githubusercontent.com/idtoken?audience=old',
                     'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-bearer'}
@@ -159,8 +159,48 @@ class WorkloadRefreshTests(unittest.TestCase):
     def test_backup_refreshes_during_polling_and_before_followup_operations(self):
         cloud = Cloud(self.private)
         cloud.refresh_workload_login = Mock()
+        cloud.pending_backup = Mock(return_value=None)
         with patch('cloud.az', side_effect=[{'name': 'synthetic-job'},
                 {'properties': {'status': 'InProgress'}}, {'properties': {'status': 'Completed'}}]), patch('cloud.time.sleep'):
             cloud.backup(7)
         self.assertEqual(cloud.refresh_workload_login.call_count, 4)
         cloud.refresh_workload_login.assert_called_with(force=True)
+
+
+class BackupRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.private = {'subscriptionId': 'synthetic-subscription', 'resourceGroup': 'synthetic-group',
+            'resources': {'vmName': 'synthetic-vm', 'vaultName': 'synthetic-vault',
+                          'backupContainer': 'synthetic-container', 'backupItem': 'synthetic-item'}}
+        self.cloud = Cloud(self.private)
+        self.vault = self.cloud.rg + '/providers/Microsoft.RecoveryServices/vaults/synthetic-vault'
+        self.inventory = {'value': [{'properties': {'sourceResourceId': self.cloud.vm}}]}
+        self.job = {'id': self.vault + '/backupJobs/synthetic-job', 'properties': {
+            'entityFriendlyName': 'synthetic-vm', 'operation': 'Backup', 'isUserTriggered': True, 'status': 'InProgress'}}
+
+    def test_resumes_only_an_active_on_demand_backup_of_the_verified_vm(self):
+        self.cloud.arm = Mock(side_effect=[self.inventory, {'value': [self.job]}])
+        self.assertEqual(self.cloud.pending_backup(), 'synthetic-job')
+        for change in [{'status': 'Completed'}, {'entityFriendlyName': 'other-vm'}, {'isUserTriggered': False}]:
+            self.cloud.arm = Mock(side_effect=[self.inventory, {'value': [{**self.job, 'properties': {**self.job['properties'], **change}}]}])
+            self.assertIsNone(self.cloud.pending_backup())
+
+    def test_ambiguous_vm_or_job_scope_is_rejected(self):
+        from cloud import Failure
+        for inventory in [{'value': []}, {'value': self.inventory['value'] * 2}, {'nextLink': 'more', **self.inventory}]:
+            self.cloud.arm = Mock(return_value=inventory)
+            with self.assertRaises(Failure): self.cloud.pending_backup()
+        for jobs in [[self.job, self.job], [{**self.job, 'id': '/other/vault/backupJobs/synthetic-job'}]]:
+            self.cloud.arm = Mock(side_effect=[self.inventory, {'value': jobs}])
+            with self.assertRaises(Failure): self.cloud.pending_backup()
+
+    def test_wait_accepts_a_normal_backup_longer_than_one_hour_without_triggering_another(self):
+        self.cloud.pending_backup = Mock(return_value='synthetic-job')
+        self.cloud.refresh_workload_login = Mock()
+        # A 101-minute backup is below the new three-hour deadline.
+        with patch('cloud.time.monotonic', side_effect=[0, 3601, 6060]), patch('cloud.time.sleep'), \
+             patch('cloud.az', side_effect=[{'properties': {'status': 'InProgress'}},
+                  {'properties': {'status': 'Completed'}}]) as az:
+            self.cloud.backup(7)
+        self.assertTrue(all(call.args[:3] == ('backup', 'job', 'show') for call in az.call_args_list))
+        self.cloud.refresh_workload_login.assert_called_with(force=True)
