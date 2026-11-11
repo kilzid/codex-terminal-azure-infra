@@ -77,13 +77,16 @@ try {
   if (phase === 'prepare') {
     tmux('new-session', '-d', '-s', 'main', '-x', '120', '-y', '40', '-c', '/workspace',
       'codex --dangerously-bypass-approvals-and-sandbox');
-    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes('Ask Codex') &&
-      snapshot().windows[0].panes[0].session, 'Codex input and durable lifecycle readiness');
+    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes('Ask Codex'), 'Codex input readiness');
     await pause(1000);
     assert.ok(get('socket_path').startsWith(tmp + '/'), 'only the isolated test pane receives seed input');
     tmux('send-keys', '-t', 'main', '-l', 'Local restoration test. Do not execute tools.');
+    await pause(250);
     tmux('send-keys', '-t', 'main', 'C-m');
-    await pause(600); tmux('send-keys', '-t', 'main', 'C-m');
+    for (let attempt = 0; !requests && attempt < 10; attempt++) {
+      await pause(1000);
+      if (!requests) tmux('send-keys', '-t', 'main', 'C-m');
+    }
     await until(() => tmux('capture-pane', '-p', '-t', 'main').includes(text) && snapshot().windows[0].panes[0].session, 'saved Codex reply and lifecycle mapping');
     const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
       entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
