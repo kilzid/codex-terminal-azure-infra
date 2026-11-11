@@ -1,11 +1,11 @@
 name: Cancel obsolete Production
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/cancel-obsolete-production.yml
-      - tools/cancel-obsolete-production.py
+    inputs:
+      run_id:
+        description: Exact obsolete Production run to cancel
+        type: string
+        required: true
 permissions:
   contents: read
 jobs:
@@ -24,4 +24,5 @@ jobs:
       - name: Cancel the single obsolete Production controller
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: ${{ inputs.run_id }}
         run: python3 tools/cancel-obsolete-production.py

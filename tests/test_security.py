@@ -98,3 +98,40 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaises(Failure):repository_binding(repo,'another/infra')
         repo['permissions']['admin']=False
         with self.assertRaises(Failure):repository_binding(repo,'example/infra')
+
+
+class CheckedRevisionHistoryTests(unittest.TestCase):
+    def test_full_checked_revision_history_excludes_unmerged_branch_files(self):
+        import contextlib
+        import io
+        import subprocess
+        import tempfile
+        import privacy
+        def git(directory, *args):
+            return subprocess.check_output(['git', '-C', str(directory), *args], stderr=subprocess.PIPE).decode().strip()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root/'source'; source.mkdir()
+            git(source, 'init', '-b', 'main')
+            git(source, 'config', 'user.name', 'Test')
+            git(source, 'config', 'user.email', 'noreply@github.com')
+            (source/'README.md').write_text('public baseline\n')
+            (source/'RELEASE_FILES.json').write_text(json.dumps(['README.md', 'RELEASE_FILES.json']))
+            git(source, 'add', '.'); git(source, 'commit', '-m', 'Baseline')
+            (source/'README.md').write_text('public revision\n')
+            git(source, 'commit', '-am', 'Reviewed revision')
+            git(source, 'switch', '-c', 'feature/future')
+            (source/'future.txt').write_text('public future feature\n')
+            (source/'RELEASE_FILES.json').write_text(json.dumps(['README.md', 'RELEASE_FILES.json', 'future.txt']))
+            git(source, 'add', '.'); git(source, 'commit', '-m', 'Unmerged feature')
+            clone = root/'checked'
+            subprocess.check_call(['git', 'clone', '--depth=1', '--single-branch', '--no-tags', '--branch', 'main',
+                                   source.as_uri(), str(clone)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            head = git(clone, 'rev-parse', 'HEAD')
+            git(clone, 'fetch', '--no-tags', '--unshallow', 'origin', head)
+            self.assertEqual(git(clone, 'rev-list', '--count', 'HEAD'), '2', 'full checked revision history is retained')
+            with patch.object(privacy, 'ROOT', clone), patch.object(sys, 'argv', ['privacy.py']), contextlib.redirect_stdout(io.StringIO()):
+                privacy.main()
+                # Reproduce the old fetch-depth:0 behavior that also fetched the future branch.
+                git(clone, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*')
+                with self.assertRaisesRegex(ValueError, 'historic-file-outside-whitelist'):
+                    privacy.main()
