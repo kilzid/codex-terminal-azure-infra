@@ -2,11 +2,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const state = path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'terminal-restore');
-const frozen = path.join(process.env.TMUX_TMPDIR || '/tmp', 'codex-terminal-frozen');
+const frozen = path.join(process.env.TMUX_TMPDIR || process.env.TMPDIR || '/tmp', 'codex-terminal-frozen');
 let recoveryFailed = false;
+const herdrBackend = spawnSync('herdr', ['--version'], { stdio: 'ignore', timeout: 5000 }).status === 0;
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const panePattern = /^%\d+$/;
 const tmux = (...args) => execFileSync('tmux', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).replace(/\n$/, '');
@@ -71,7 +72,7 @@ export function conversationId(sessionId, transcriptPath) {
   } catch { return null; }
   finally { if (fd !== undefined) fs.closeSync(fd); }
 }
-export function hook(event, pid = codexPid()) {
+function legacyHook(event, pid = codexPid()) {
   const pane = process.env.TMUX_PANE;
   if (!panePattern.test(pane || '') || !idPattern.test(event.session_id || '') || fs.existsSync(frozen)) return;
   if (tmux('display-message', '-p', '-t', pane, '#{session_name}') !== 'main') return;
@@ -90,7 +91,7 @@ export function hook(event, pid = codexPid()) {
     tmux('set-option', '-pu', '-t', pane, '@ct_restore_transcript');
   }
 }
-export function snapshot() {
+function legacySnapshot() {
   const get = (target, field) => tmux('display-message', '-p', '-t', target, '#{' + field + '}');
   const windows = tmux('list-windows', '-t', 'main', '-F', '#{window_id}').split('\n').map(wid => {
     const panes = tmux('list-panes', '-t', wid, '-F', '#{pane_id}').split('\n').map(pane => {
@@ -107,10 +108,10 @@ export function snapshot() {
   return validate({ version: 1, selected: windows.find(w => w.active).index,
     windows: windows.map(({ active, ...w }) => w) });
 }
-export function checkpoint(freeze = false) {
+function legacyCheckpoint(freeze = false) {
   if (fs.existsSync(frozen) || recoveryFailed) return;
   let value;
-  try { value = snapshot(); } catch {
+  try { value = legacySnapshot(); } catch {
     try { tmux('has-session', '-t', '=main'); } catch { return; }
     throw Error('checkpoint unavailable');
   }
@@ -136,17 +137,21 @@ export function resume(id) {
   // the checkpoint's explicit ID to the process we launch, without input.
   if (child.pid) hook({ hook_event_name: 'SessionStart', session_id: id }, child.pid);
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
-  child.on('error', () => { process.exitCode = 1; });
+  child.on('error', () => { console.error('Conversation could not be resumed; shell is ready.'); process.exitCode = 1; });
   child.on('exit', code => {
     try {
-      const pane = process.env.TMUX_PANE;
-      if (panePattern.test(pane || '') && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_pid}') === String(child.pid))
-        hook({ hook_event_name: 'SessionEnd', session_id: id });
+      if (herdrBackend) hook({ hook_event_name: 'SessionEnd', session_id: id });
+      else {
+        const pane = process.env.TMUX_PANE;
+        if (panePattern.test(pane || '') && tmux('display-message', '-p', '-t', pane, '#{@ct_restore_pid}') === String(child.pid))
+          legacyHook({ hook_event_name: 'SessionEnd', session_id: id });
+      }
     } catch {}
+    if (code && herdrBackend) console.error('Conversation could not be resumed; shell is ready.');
     process.exitCode = code ?? 1;
   });
 }
-export function restore() {
+function legacyRestore() {
   try { tmux('has-session', '-t', '=main'); return false; } catch {}
   const value = read('deployment.json') || read('checkpoint.json');
   if (!value) return false;
@@ -192,9 +197,236 @@ export function restore() {
     return false;
   }
 }
-function release() { fs.rmSync(path.join(state, 'deployment.json'), { force: true }); }
-export function supervise(launcher = '/opt/codex-terminal/start.mjs') {
+// Herdr owns PTYs and native layout restoration. Keep management checkpoints
+// separate from its autosave so a failed deployment cannot replace rollback state.
+const codexHome = path.dirname(state);
+const herdrRoot = path.join(codexHome, 'herdr');
+const herdrSession = path.join(herdrRoot, 'sessions', 'main', 'session.json');
+const herdrEnv = () => ({ ...process.env, XDG_CONFIG_HOME: path.join(codexHome, 'terminal-xdg'), HERDR_SESSION: 'main' });
+export function prepareHerdrEnvironment() {
+  Object.assign(process.env, herdrEnv());
+  fs.mkdirSync(herdrRoot, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true, mode: 0o700 });
+  const link = path.join(process.env.XDG_CONFIG_HOME, 'herdr');
+  try { fs.symlinkSync(herdrRoot, link, 'dir'); } catch (error) {
+    if (error.code !== 'EEXIST' || fs.realpathSync(link) !== fs.realpathSync(herdrRoot)) throw Error('conflicting Herdr directory');
+  }
+}
+export function herdr(...args) {
+  return execFileSync('herdr', ['--session', 'main', ...args], {
+    env: herdrEnv(), encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 2 * 1024 * 1024,
+  }).trim();
+}
+function api(...args) {
+  const response = JSON.parse(herdr(...args));
+  if (response.error || !response.result) throw Error('Herdr request failed');
+  return response.result;
+}
+const mappingFile = pane => path.join(state, 'herdr-panes', pane + '.json');
+function mapping(pane) {
+  try { return JSON.parse(fs.readFileSync(mappingFile(pane), 'utf8')); } catch { return null; }
+}
+export function hook(event, pid = codexPid()) {
+  if (!herdrBackend) return legacyHook(event, pid);
+  const pane = process.env.HERDR_PANE_ID;
+  if (!/^w[A-Z0-9]+:p[A-Z0-9]+$/.test(pane || '') || !idPattern.test(event.session_id || '') || fs.existsSync(frozen)) return;
+  if (event.hook_event_name === 'SessionStart') {
+    if (Object.hasOwn(event, 'transcript_path') && !event.transcript_path) return;
+    const shell = api('pane', 'process-info', '--pane', pane).process_info.shell_pid;
+    if (!pid || !descendant(pid, shell)) return;
+    atomic(mappingFile(pane), { pid, hook: event.session_id,
+      session: conversationId(event.session_id, event.transcript_path), transcript: event.transcript_path || '' });
+  } else if (event.hook_event_name === 'SessionEnd' && mapping(pane)?.hook === event.session_id) {
+    fs.rmSync(mappingFile(pane), { force: true });
+  }
+}
+function resumePane(cwd, id) {
+  const pane = { cwd };
+  if (id) {
+    pane.agent_session = { source: 'herdr:codex', agent: 'codex', kind: 'id', value: id };
+    pane.agent_resume = { source: 'codex-infra', agent: 'codex',
+      argv: ['node', process.env.SESSION_LAUNCHER || '/opt/codex-session.mjs', 'resume', id] };
+  }
+  return pane;
+}
+// CLI split IDs encode BSP paths; pane order follows the same depth-first walk.
+function layoutTree(layout, ids) {
+  const splits = new Map(layout.splits.map(split => [split.id.replace(/^split_\d+_/, '').replace(/^root$/, ''), split]));
+  let next = 0;
+  function node(key = '') {
+    const split = splits.get(key);
+    if (!split) {
+      if (next >= ids.length) throw Error('invalid Herdr layout');
+      return { Pane: ids[next++] };
+    }
+    return { Split: { direction: split.direction === 'right' ? 'Horizontal' : 'Vertical',
+      ratio: split.ratio, first: node(key + '0'), second: node(key + '1') } };
+  }
+  const tree = node();
+  if (next !== ids.length) throw Error('invalid Herdr layout');
+  return tree;
+}
+export function snapshot() {
+  if (!herdrBackend) return legacySnapshot();
+  const live = api('api', 'snapshot').snapshot;
+  const seen = new Set();
+  let raw = 0;
+  const workspaces = live.workspaces.map(ws => {
+    const tabs = live.tabs.filter(tab => tab.workspace_id === ws.workspace_id).map(tab => {
+      const layout = live.layouts.find(item => item.tab_id === tab.tab_id);
+      const panes = {}, ids = [], publicNumbers = {};
+      for (const item of layout.panes) {
+        const pane = live.panes.find(p => p.pane_id === item.pane_id);
+        const id = ++raw; ids.push(id);
+        const tracked = mapping(item.pane_id);
+        let session = null;
+        if (tracked && idPattern.test(tracked.session || '')) {
+          const shell = api('pane', 'process-info', '--pane', item.pane_id).process_info.shell_pid;
+          if (descendant(tracked.pid, shell)) session = conversationId(tracked.session, tracked.transcript);
+        }
+        if (seen.has(session)) session = null;
+        if (session) seen.add(session);
+        panes[id] = resumePane(pane.foreground_cwd || pane.cwd || '/workspace', session);
+        if (pane.label) panes[id].label = pane.label;
+        publicNumbers[id] = decodeNumber(item.pane_id.split(':p')[1]);
+      }
+      return { custom_name: tab.label, layout: layoutTree(layout, ids), panes, zoomed: layout.zoomed,
+        focused: ids[layout.panes.findIndex(p => p.pane_id === layout.focused_pane_id)], root_pane: ids[0],
+        _publicNumbers: publicNumbers, _number: tab.number };
+    });
+    const public_pane_numbers = Object.assign({}, ...tabs.map(tab => tab._publicNumbers));
+    const public_tab_numbers = tabs.map(tab => tab._number);
+    for (const tab of tabs) { delete tab._publicNumbers; delete tab._number; }
+    return { id: ws.workspace_id, custom_name: ws.label, identity_cwd: Object.values(tabs[0].panes)[0].cwd,
+      public_pane_numbers, public_tab_numbers, tabs,
+      active_tab: live.tabs.filter(t => t.workspace_id === ws.workspace_id).findIndex(t => t.tab_id === ws.active_tab_id) };
+  });
+  const selected = live.workspaces.findIndex(ws => ws.workspace_id === live.focused_workspace_id);
+  return validateHerdr({ version: 3, workspaces, active: Math.max(0, selected), selected: Math.max(0, selected) });
+}
+function decodeNumber(value) {
+  const alphabet = '123456789ABCDEFGHJKMNPQRSTVWXYZ0';
+  return [...value].reduce((n, ch) => n * alphabet.length + alphabet.indexOf(ch) + 1, 0);
+}
+export function validateHerdr(value) {
+  if (value?.version !== 3 || !Array.isArray(value.workspaces) || !value.workspaces.length || value.workspaces.length > 100 ||
+      !Number.isInteger(value.active) || !value.workspaces[value.active]) throw Error('invalid Herdr checkpoint');
+  const seen = new Set();
+  let count = 0;
+  for (const ws of value.workspaces) {
+    if (!Array.isArray(ws.tabs) || !ws.tabs.length || !ws.tabs[ws.active_tab]) throw Error('invalid Herdr tabs');
+    for (const tab of ws.tabs) {
+      const ids = new Set();
+      function walk(node, depth = 0) {
+        if (depth > 100) throw Error('invalid Herdr layout');
+        if (Number.isSafeInteger(node?.Pane) && node.Pane > 0 && tab.panes?.[node.Pane] && !ids.has(node.Pane)) { ids.add(node.Pane); return; }
+        const s = node?.Split;
+        if (!s || !['Horizontal', 'Vertical'].includes(s.direction) || !(s.ratio > 0 && s.ratio < 1)) throw Error('invalid Herdr layout');
+        walk(s.first, depth + 1); walk(s.second, depth + 1);
+      }
+      walk(tab.layout);
+      if (ids.size !== Object.keys(tab.panes).length || !ids.has(tab.focused) || !ids.has(tab.root_pane)) throw Error('invalid Herdr panes');
+      for (const pane of Object.values(tab.panes)) {
+        if (++count > 10000 || !path.isAbsolute(pane.cwd || '') || /[\x00-\x1f]/.test(pane.cwd)) throw Error('invalid Herdr directory');
+        // Only infrastructure-authored Codex resumes are accepted; never replay
+        // saved arbitrary launch commands or terminal input during restoration.
+        delete pane.launch_argv;
+        const id = pane.agent_session?.agent === 'codex' && pane.agent_session.kind === 'id' ? pane.agent_session.value : null;
+        delete pane.agent_resume; delete pane.agent_session;
+        if (idPattern.test(id || '') && !seen.has(id)) { Object.assign(pane, resumePane(pane.cwd, id)); seen.add(id); }
+      }
+    }
+  }
+  return value;
+}
+export function checkpoint(freeze = false) {
+  if (!herdrBackend) return legacyCheckpoint(freeze);
+  if (fs.existsSync(frozen) || recoveryFailed) return;
+  let value;
+  try { value = snapshot(); } catch (error) {
+    // A fresh server has no workspaces until the first browser attaches.
+    const live = api('api', 'snapshot').snapshot;
+    if (!live.workspaces.length) return;
+    throw error;
+  }
+  atomic(path.join(state, 'herdr-checkpoint.json'), value);
+  if (freeze) {
+    if (!fs.existsSync(path.join(state, 'herdr-deployment.json'))) atomic(path.join(state, 'herdr-deployment.json'), value);
+    fs.writeFileSync(frozen, '', { mode: 0o600 });
+  }
+}
+// tmux windows become tabs in one Herdr workspace. The source is retained for rollback.
+export function migrateLegacy(value) {
+  validate(value);
+  let raw = 0;
+  const tabs = value.windows.map(w => {
+    const ids = w.panes.map(() => ++raw);
+    let leaf = 0;
+    const text = w.layout.slice(5);
+    let offset = 0;
+    function parse() {
+      const match = /^(\d+)x(\d+),\d+,\d+/.exec(text.slice(offset));
+      if (!match) throw Error('invalid tmux layout');
+      offset += match[0].length;
+      const marker = text[offset];
+      if (marker !== '{' && marker !== '[') {
+        const pane = /^,\d+/.exec(text.slice(offset));
+        if (!pane || leaf >= ids.length) throw Error('invalid tmux pane');
+        offset += pane[0].length;
+        return { tree: { Pane: ids[leaf++] }, size: [Number(match[1]), Number(match[2])] };
+      }
+      offset++;
+      const children = [parse()];
+      while (text[offset] === ',') { offset++; children.push(parse()); }
+      if (text[offset++] !== (marker === '{' ? '}' : ']')) throw Error('invalid tmux split');
+      const axis = marker === '{' ? 0 : 1;
+      function fold(items) {
+        if (items.length === 1) return items[0].tree;
+        const total = items.reduce((sum, child) => sum + child.size[axis], 0);
+        return { Split: { direction: axis === 0 ? 'Horizontal' : 'Vertical', ratio: items[0].size[axis] / total,
+          first: items[0].tree, second: fold(items.slice(1)) } };
+      }
+      return { tree: fold(children), size: [Number(match[1]), Number(match[2])] };
+    }
+    const layout = parse().tree;
+    if (offset !== text.length || leaf !== ids.length) throw Error('invalid tmux layout');
+    return { custom_name: w.name, layout, panes: Object.fromEntries(w.panes.map((p, i) => [ids[i], resumePane(p.cwd, p.session)])),
+      zoomed: Boolean(w.zoomed), focused: ids[w.selected], root_pane: ids[0] };
+  });
+  return validateHerdr({ version: 3, workspaces: [{ identity_cwd: '/workspace', custom_name: 'main', tabs,
+    active_tab: value.windows.findIndex(w => w.index === value.selected) }], active: 0, selected: 0 });
+}
+export function restore() {
+  if (!herdrBackend) return legacyRestore();
+  prepareHerdrEnvironment();
+  try { api('api', 'snapshot'); return false; } catch { /* no running server */ }
+  let value;
+  for (const file of ['herdr-deployment.json', 'herdr-checkpoint.json']) {
+    const target = path.join(state, file);
+    if (fs.existsSync(target)) { value = validateHerdr(JSON.parse(fs.readFileSync(target, 'utf8'))); break; }
+  }
+  if (!value && !fs.existsSync(herdrSession)) {
+    const legacy = read('deployment.json') || read('checkpoint.json');
+    if (legacy) value = migrateLegacy(legacy);
+  }
+  if (!value && fs.existsSync(herdrSession)) value = validateHerdr(JSON.parse(fs.readFileSync(herdrSession, 'utf8')));
+  if (!value) return false;
+  for (const ws of value.workspaces) for (const tab of ws.tabs) for (const pane of Object.values(tab.panes)) {
+    try { if (fs.statSync(pane.cwd).isDirectory()) continue; } catch {}
+    pane.cwd = '/workspace';
+  }
+  // Pane IDs and PIDs belong to the previous server and must never map new shells.
+  fs.rmSync(path.join(state, 'herdr-panes'), { recursive: true, force: true });
+  atomic(herdrSession, value);
+  return true;
+}
+
+function release() {
+  for (const name of ['deployment.json', 'herdr-deployment.json']) fs.rmSync(path.join(state, name), { force: true });
+}
+export function supervise(launcher = path.join(process.env.TERMINAL_ROOT || '/opt/codex-terminal', 'start.mjs')) {
   fs.rmSync(frozen, { force: true });
+  if (herdrBackend) prepareHerdrEnvironment();
   restore();
   const child = spawn(process.execPath, [launcher], { stdio: 'inherit' });
   let stopping = false;

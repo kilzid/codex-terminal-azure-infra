@@ -3,29 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 const phase = process.argv[2];
-if (phase === 'observe') {
-  const event = JSON.parse(fs.readFileSync(0, 'utf8'));
-  fs.appendFileSync('/home/node/.codex/real-restore-test/hook-events.jsonl',
-    JSON.stringify({ ...event, observedHome: process.env.CODEX_HOME }) + '\n', { mode: 0o600 });
-  process.exit(0);
-}
 assert.ok(['prepare', 'verify'].includes(phase));
 const home = process.env.CODEX_HOME;
 assert.ok(home && home.endsWith('/real-restore-test'));
 fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-const tmp = '/tmp/real-codex-restore-tmux';
-fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
-const env = { PATH: process.env.PATH, HOME: '/home/node', USER: 'node', SHELL: '/bin/bash',
-  CODEX_HOME: home, TMUX_TMPDIR: tmp, TERM: 'xterm-256color' };
-process.env.TMUX_TMPDIR = tmp;
-delete process.env.TMUX; delete process.env.TMUX_PANE;
-const { checkpoint, restore, snapshot } = await import('/opt/codex-session.mjs');
-const tmux = (...args) => execFileSync('tmux', args, { env, encoding: 'utf8' }).trim();
+// Prevent the parent coding session's daemon/thread variables from entering the test.
+const keep = new Set(['PATH', 'HOME', 'USER', 'SHELL', 'CODEX_HOME', 'TERM', 'TMPDIR', 'TERMINAL_ROOT', 'SESSION_LAUNCHER']);
+for (const key of Object.keys(process.env)) if (!keep.has(key)) delete process.env[key];
+process.env.TERM = 'xterm-256color';
+const managerPath = process.env.SESSION_LAUNCHER || '/opt/codex-session.mjs';
+const { checkpoint, restore, snapshot, prepareHerdrEnvironment, herdr } = await import(managerPath);
+const pty = createRequire((process.env.TERMINAL_ROOT || '/opt/codex-terminal') + '/package.json')('node-pty');
+prepareHerdrEnvironment();
+const api = (...args) => JSON.parse(herdr(...args)).result;
+let pane;
+const screen = () => herdr('pane', 'read', pane, '--lines', '200');
+const sessionId = () => Object.values(snapshot().workspaces[0].tabs[0].panes)[0].agent_session?.value;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
-  for (let i = 0; i < 160; i++) { if (check()) return; await pause(250); }
+  for (let i = 0; i < 160; i++) { if (await check()) return; await pause(250); }
   throw Error('Timed out: ' + label);
 }
 let requests = 0;
@@ -50,7 +50,13 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-fs.writeFileSync(path.join(home, 'config.toml'), `model = "gpt-5.4"
+const configPath = path.join(home, 'config.toml');
+if (phase === 'verify') {
+  // Preserve persisted hook consent while changing only the local stub's port.
+  const previous = fs.readFileSync(configPath, 'utf8');
+  fs.writeFileSync(configPath, previous.replace(/^base_url = .*$/m, `base_url = "http://127.0.0.1:${server.address().port}/v1"`));
+} else fs.writeFileSync(configPath, `model = "gpt-5.4"
+check_for_update_on_startup = false
 model_provider = "restore_test"
 [model_providers.restore_test]
 name = "Local restoration test"
@@ -58,41 +64,68 @@ base_url = "http://127.0.0.1:${server.address().port}/v1"
 wire_api = "responses"
 requires_openai_auth = false
 supports_websockets = false
+[features]
+hooks = true
+daemon_auto_start = false
+plugins = false
+remote_plugin = false
+plugin_discovery_prefetch = false
 `, { mode: 0o600 });
-const get = field => tmux('display-message', '-p', '-t', 'main', '#{' + field + '}');
-function codexRunning() {
-  const pending = [Number(get('pane_pid'))];
-  const seen = new Set();
-  while (pending.length && seen.size < 256) {
-    const pid = pending.pop(); if (seen.has(pid)) continue; seen.add(pid);
-    try {
-      if (path.basename(fs.readlinkSync('/proc/' + pid + '/exe')) === 'codex') return true;
-      const children = fs.readFileSync('/proc/' + pid + '/task/' + pid + '/children', 'utf8').trim();
-      if (children) pending.push(...children.split(/\s+/).map(Number));
-    } catch { /* A child may have just exited. */ }
+fs.writeFileSync(path.join(home, 'herdr/config.toml'), 'onboarding = false\n[session]\nresume_agents_on_restore = true\n[update]\nversion_check = false\nmanifest_check = false\n');
+// Include the native integration installed by the production launcher.
+const { prepareHerdr } = await import(pathToFileURL(path.join(process.env.TERMINAL_ROOT || '/opt/codex-terminal', 'herdr.mjs')));
+Object.assign(process.env, prepareHerdr().env);
+// Local execution uses the same managed hook without changing /etc or live state.
+if (process.env.SESSION_LAUNCHER) {
+  const file = path.join(home, 'hooks.json');
+  const config = JSON.parse(fs.readFileSync(file));
+  for (const event of ['SessionStart', 'SessionEnd']) {
+    config.hooks[event] ||= [];
+    const command = 'node ' + managerPath + ' hook';
+    if (!config.hooks[event].some(group => group.hooks?.some(hook => hook.command === command)))
+      config.hooks[event].unshift({ hooks: [{ type: 'command', command, timeout: 3 }] });
   }
-  return false;
+  fs.writeFileSync(file, JSON.stringify(config));
 }
+const codexRunning = () => {
+  try { return api('pane', 'process-info', '--pane', pane).process_info.foreground_processes.some(p => p.name === 'codex'); }
+  catch { return false; } // Restored PTYs are initialized when the client attaches.
+};
+if (phase === 'verify') assert.equal(restore(), true);
+const background = spawn('herdr', ['--session', 'main', 'server'], { stdio: 'ignore' });
+let client;
 try {
   if (phase === 'prepare') {
-    tmux('new-session', '-d', '-s', 'main', '-x', '120', '-y', '40', '-c', '/workspace',
-      'codex --dangerously-bypass-approvals-and-sandbox');
-    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes('Ask Codex'), 'Codex input readiness');
+    await until(() => { try { api('api', 'snapshot'); return true; } catch { return false; } }, 'Herdr server');
+    pane = api('workspace', 'create', '--cwd', '/workspace', '--label', 'real Codex test').root_pane.pane_id;
+    client = pty.spawn('herdr', ['--session', 'main'], { env: process.env, cols: 120, rows: 40 });
+    client.onData(() => {});
+    herdr('pane', 'run', pane, 'codex --dangerously-bypass-approvals-and-sandbox');
+    await until(() => screen().includes('Ask Codex'), 'Codex input readiness');
     await pause(1000);
-    assert.ok(get('socket_path').startsWith(tmp + '/'), 'only the isolated test pane receives seed input');
-    tmux('send-keys', '-t', 'main', '-l', 'Local restoration test. Do not execute tools.');
-    await pause(250);
-    tmux('send-keys', '-t', 'main', 'C-m');
-    for (let attempt = 0; !requests && attempt < 10; attempt++) {
-      await pause(1000);
-      if (!requests) tmux('send-keys', '-t', 'main', 'C-m');
-    }
-    await until(() => tmux('capture-pane', '-p', '-t', 'main').includes(text) && snapshot().windows[0].panes[0].session, 'saved Codex reply and lifecycle mapping');
+    herdr('pane', 'run', pane, 'Local restoration test. Do not execute tools.');
+    await until(async () => {
+      const output = screen();
+      // Only this disposable test home's known hooks are trusted by the fixture.
+      if (output.includes('Hooks need review')) {
+        herdr('pane', 'send-keys', pane, '2');
+        await pause(250);
+        herdr('pane', 'send-keys', pane, 'enter');
+      } else if (output.includes('t trust all')) {
+        herdr('pane', 'send-keys', pane, 't');
+        await pause(250);
+        herdr('pane', 'send-keys', pane, 'esc');
+      } else if (output.includes('Lifecycle hooks from config')) herdr('pane', 'send-keys', pane, 'esc');
+      else if (output.includes('SessionStart hooks')) herdr('pane', 'send-keys', pane, 'esc');
+      else if (!requests && output.includes('Ask Codex') && !output.includes('Waiting for startup'))
+        herdr('pane', 'run', pane, 'Local restoration test. Do not execute tools.');
+      return output.includes(text) && sessionId();
+    }, 'saved Codex reply and lifecycle mapping');
     const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
       entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
     let id;
     await until(() => {
-      id = snapshot().windows[0].panes[0].session;
+      id = sessionId();
       if (!id || !fs.existsSync(path.join(home, 'sessions'))) return false;
       const transcripts = walk(path.join(home, 'sessions')).filter(file => path.basename(file).includes(id));
       if (transcripts.length !== 1) return false;
@@ -104,26 +137,24 @@ try {
     console.log('REAL_CODEX_CONVERSATION_CHECKPOINT_OK');
   } else {
     const expected = JSON.parse(fs.readFileSync(path.join(home, 'expected-thread.json'), 'utf8'));
-    assert.equal(restore(), true);
+    await until(() => { try { pane = api('api', 'snapshot').snapshot.panes[0]?.pane_id; return Boolean(pane); } catch { return false; } }, 'restored Herdr pane');
+    client = pty.spawn('herdr', ['--session', 'main'], { env: process.env, cols: 120, rows: 40 });
+    client.onData(() => {});
     // No input is sent during verification: the restored conversation must wait.
-    await until(() => codexRunning() && snapshot().windows[0].panes[0].session === expected.id &&
-      tmux('capture-pane', '-p', '-t', 'main').includes(text), 'exact real Codex conversation resume');
+    await until(() => codexRunning() && sessionId() === expected.id &&
+      screen().includes(text), 'exact real Codex conversation resume');
     await pause(1000);
     assert.equal(requests, 0, 'automatic restoration must not submit a prompt or run inference');
-    assert.equal(snapshot().windows[0].panes[0].session, expected.id);
+    assert.equal(sessionId(), expected.id);
     console.log('REAL_CODEX_EXACT_CONVERSATION_RESTORE_WITHOUT_PROMPT_OK');
   }
 } catch (error) {
-  try { console.error(JSON.stringify({ phase, codexRunning: codexRunning(), mapped: Boolean(get('@ct_restore_thread_id')),
-    syntheticScreen: tmux('capture-pane', '-p', '-t', 'main'),
-    priorReplyVisible: tmux('capture-pane', '-p', '-t', 'main').includes(text),
-    suppliedTranscript: Boolean(get('@ct_restore_transcript')),
-    suppliedTranscriptExists: fs.existsSync(get('@ct_restore_transcript')),
-    hookEvents: fs.existsSync(path.join(home, 'hook-events.jsonl')) ? fs.readFileSync(path.join(home, 'hook-events.jsonl'), 'utf8').trim().split('\n').map(line => {
-      const event = JSON.parse(line);
-      return { fields: Object.keys(event), event: event.hook_event_name, source: event.source,
-        transcriptSupplied: Boolean(event.transcript_path), transcriptExists: fs.existsSync(event.transcript_path || ''),
-        homeMatches: event.observedHome === home };
-    }) : [] })); } catch {}
+  // These tests contain only synthetic data; never use this diagnostic on production panes.
+  try { console.error(JSON.stringify({ phase, screen: screen(), mapped: sessionId() })); } catch {}
   throw error;
-} finally { server.closeAllConnections(); server.close(); }
+} finally {
+  try { herdr('session', 'stop', 'main'); } catch {}
+  client?.kill();
+  if (background.exitCode === null) background.kill();
+  server.closeAllConnections(); server.close();
+}
