@@ -21,16 +21,13 @@ await new Promise(resolve => app.listen(3000, '127.0.0.1', resolve));
 try {
   for (const authenticated of [false, true]) {
     const config = await mkdtemp('/tmp/remobi-smoke-');
-    const env = { ...process.env, TMUX_TMPDIR: config, CODEX_HOME: config, APP_PORTS: '3000',
+    const env = { ...process.env, TMPDIR: config, CODEX_HOME: config, XDG_CONFIG_HOME: join(config, 'terminal-xdg'), APP_PORTS: '3000',
       AUTH_PASSWORD: '', AUTH_USERNAME: authenticated ? 'smoke' : '',
       AUTH_PASSWORD_HASH: authenticated ? await hashPassword('smoke-password') : '' };
     delete env.TMUX; delete env.TMUX_PANE;
-    const tmux = (...args) => execFileSync('tmux', args, { env, encoding: 'utf8' }).trim();
-    if (authenticated && process.env.SESSION_LAUNCHER) {
-      tmux('new-session', '-d', '-s', 'main', '-c', '/workspace', '/bin/bash');
-      execFileSync(process.execPath, [process.env.SESSION_LAUNCHER, 'freeze'], { env });
-      tmux('kill-server');
-    }
+    const herdr = (...args) => execFileSync('herdr', ['--session', 'main', ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const live = () => JSON.parse(herdr('api', 'snapshot')).result.snapshot;
+    const layout = () => live().layouts[0];
     const child = spawn(process.execPath, [process.env.SESSION_LAUNCHER || join(root, 'start.mjs')], { env, stdio: 'inherit' });
     const exit = once(child, 'exit');
     const clients = new Set();
@@ -67,17 +64,21 @@ try {
       }, 'Remobi startup');
       assert.match(await (await request('/')).text(), /<html/i);
       const terminal = await connect();
+      await until(() => terminal.output().includes('/workspace'), 'Herdr shell readiness');
       terminal.send({ type: 'resize', cols: 100, rows: 30 });
       // Split marker prevents input echo from satisfying the output assertion.
       terminal.send({ type: 'input', data: "printf 'PTY_%s:%s\\n' OK \"$PWD\"\r" });
       await until(() => terminal.output().includes('PTY_OK:/workspace'), 'PTY command');
-      await until(() => tmux('display-message', '-p', '-t', 'main', '#{pane_width}') === '100', 'PTY resize');
+      await until(() => layout()?.area.width > 0 && layout().area.width <= 100, 'PTY resize');
+      const width = layout().area.width;
+      terminal.send({ type: 'resize', cols: 130, rows: 30 });
+      await until(() => layout().area.width === width + 30, 'Herdr client resize');
       const closed = once(terminal.ws, 'close'); terminal.ws.close(); await closed;
       const reconnected = await connect(true);
       await until(() => reconnected.output().includes('PTY_OK:/workspace'), 'reconnect snapshot');
       const shared = await connect();
       reconnected.send({ type: 'input', data: "printf 'SHARED_%s\\n' OK\r" });
-      await until(() => shared.output().includes('SHARED_OK'), 'shared tmux session');
+      await until(() => shared.output().includes('SHARED_OK'), 'shared Herdr session');
       for (const origin of ['https://foreign.example', 'null', undefined]) {
         const foreign = new WebSocket(base.replace('http:', 'ws:') + '/ws', { headers: { cookie, ...(origin ? { origin } : {}) } });
         clients.add(foreign);
@@ -86,6 +87,14 @@ try {
       }
       assert.equal(await (await request('/apps/3000/ready?yes=1')).text(), '/apps/3000/ready?yes=1');
       assert.equal((await request('/apps/3001/')).status, 404);
+      if (!authenticated) {
+        const before = live();
+        const result = execFileSync(process.execPath, [process.env.NATIVE_PROBE || '/tmp/native-probe.mjs'],
+          { env: { ...env, PROBE_PORT: process.env.SMOKE_PORT || '7681' }, encoding: 'utf8' });
+        assert.match(result, /DEPLOYED_REMOBI_HTTP_WEBSOCKET_ORIGIN_PTY_OK/);
+        assert.equal(live().focused_pane_id, before.focused_pane_id, 'verification leaves focus unchanged');
+        assert.equal(live().workspaces.length, before.workspaces.length, 'verification removes only its workspace');
+      }
       child.kill('SIGTERM');
       assert.deepEqual(await Promise.race([exit, pause(8000).then(() => { throw Error('Shutdown timeout'); })]), [0, null]);
       await until(() => [...clients].every(ws => ws.readyState === WebSocket.CLOSED), 'socket shutdown');
@@ -93,7 +102,7 @@ try {
     } finally {
       for (const ws of clients) ws.terminate();
       if (child.exitCode === null) { child.kill('SIGKILL'); await exit; }
-      try { tmux('kill-server'); } catch { /* already stopped */ }
+      try { herdr('session', 'stop', 'main'); } catch { /* already stopped */ }
       await rm(config, { recursive: true, force: true });
     }
   }

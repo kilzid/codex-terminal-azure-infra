@@ -78,6 +78,7 @@ test('checkpoint, lifecycle, restoration and rollback', async () => {
     // Hosted CI has no /workspace; tmux falls back to HOME there. Production always mounts it.
     assert.equal(get('main:4', 'pane_current_path'), fs.existsSync('/workspace') ? '/workspace' : os.homedir());
     assert.equal(get('main', 'window_index'), '0');
+    for (let attempt = 0; attempt < 50 && !/shell\s+is ready/.test(tmux('capture-pane', '-p', '-t', 'main:0.0')); attempt++) await sleep(100);
     assert.match(tmux('capture-pane', '-p', '-t', 'main:0.0'), /shell\s+is ready/);
     assert.deepEqual(fs.readFileSync(path.join(root, 'resumes'), 'utf8').trim().split('\n'), manager.resumeArgs('session_exact'));
     assert.equal(manager.restore(), false, 'repeated startup is inert');
@@ -133,4 +134,32 @@ test('supervisor freezes before forwarding termination signals', async () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+test('tmux checkpoints migrate to native Herdr tabs without replaying shell commands', () => {
+  const legacy = { version: 1, selected: 4, windows: [
+    { index: 0, name: 'first', layout: '1234,120x40,0,0{60x40,0,0,0,59x40,61,0[59x20,61,0,1,59x19,61,21,2]}',
+      selected: 2, zoomed: 1, panes: [{ cwd: '/workspace', session: 'exact_id' }, { cwd: '/tmp', session: 'exact_id' }, { cwd: '/workspace', session: null }] },
+    { index: 4, name: 'fourth', layout: '1234,80x24,0,0,3', selected: 0, zoomed: 0, panes: [{ cwd: '/workspace', session: null }] },
+  ] };
+  const migrated = manager.migrateLegacy(legacy);
+  const ws = migrated.workspaces[0];
+  assert.equal(migrated.version, 3);
+  assert.equal(ws.active_tab, 1);
+  assert.deepEqual(ws.tabs.map(t => t.custom_name), ['first', 'fourth']);
+  assert.equal(ws.tabs[0].zoomed, true);
+  assert.equal(ws.tabs[0].focused, 3);
+  assert.equal(ws.tabs[0].layout.Split.direction, 'Horizontal');
+  assert.equal(ws.tabs[0].layout.Split.second.Split.direction, 'Vertical');
+  assert.deepEqual(ws.tabs[0].panes[1].agent_resume.argv, ['node', '/opt/codex-session.mjs', 'resume', 'exact_id']);
+  assert.equal(ws.tabs[0].panes[2].agent_resume, undefined, 'duplicate conversation resumes only once');
+  assert.equal(legacy.windows[0].panes[1].session, 'exact_id', 'legacy checkpoint retained unchanged');
+  const injected = structuredClone(migrated);
+  injected.workspaces[0].tabs[0].panes[1].launch_argv = ['sh', '-c', 'untrusted'];
+  injected.workspaces[0].tabs[0].panes[1].agent_resume.argv = ['sh', '-c', 'untrusted'];
+  const sanitized = manager.validateHerdr(injected).workspaces[0].tabs[0].panes[1];
+  assert.equal(sanitized.launch_argv, undefined);
+  assert.deepEqual(sanitized.agent_resume.argv, ['node', '/opt/codex-session.mjs', 'resume', 'exact_id']);
+  assert.throws(() => manager.migrateLegacy({ ...legacy, windows: [{ ...legacy.windows[0], layout: '1234,broken' }] }));
+  assert.throws(() => manager.validateHerdr({ ...migrated, version: 4 }));
 });
