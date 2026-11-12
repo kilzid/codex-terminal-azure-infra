@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 const managerPath = process.env.SESSION_LAUNCHER || '/opt/codex-session.mjs';
 const { snapshot, checkpoint, hook, restore, prepareHerdrEnvironment, herdr } = await import(managerPath);
 const config = process.env.CODEX_HOME || '/home/node/.codex';
+process.env.CODEX_HOME = config;
 const pty = createRequire((process.env.TERMINAL_ROOT || '/opt/codex-terminal') + '/package.json')('node-pty');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const api = (...args) => JSON.parse(herdr(...args)).result;
@@ -15,6 +16,8 @@ async function until(check, label) {
   throw Error('Timed out: ' + label);
 }
 prepareHerdrEnvironment();
+// Match the launcher defaults in a new container, with no inherited user setup.
+fs.writeFileSync(path.join(config, 'herdr/config.toml'), 'onboarding = false\n[terminal]\ndefault_shell = "/bin/bash"\n[session]\nresume_agents_on_restore = true\n[update]\nversion_check = false\nmanifest_check = false\n');
 const phase = process.argv[2];
 const bin = path.join(config, 'restore-test-bin');
 if (phase === 'verify') process.env.PATH = bin + ':' + process.env.PATH;
