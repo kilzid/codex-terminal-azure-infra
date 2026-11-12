@@ -21,7 +21,7 @@ const pty = createRequire((process.env.TERMINAL_ROOT || '/opt/codex-terminal') +
 prepareHerdrEnvironment();
 const api = (...args) => JSON.parse(herdr(...args)).result;
 let pane;
-const screen = () => herdr('pane', 'read', pane, '--lines', '200');
+const screen = () => herdr('pane', 'read', pane, '--source', 'visible');
 const sessionId = () => Object.values(snapshot().workspaces[0].tabs[0].panes)[0].agent_session?.value;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
@@ -117,8 +117,10 @@ try {
         herdr('pane', 'send-keys', pane, 'esc');
       } else if (output.includes('Lifecycle hooks from config')) herdr('pane', 'send-keys', pane, 'esc');
       else if (output.includes('SessionStart hooks')) herdr('pane', 'send-keys', pane, 'esc');
-      else if (!requests && output.includes('Ask Codex') && !output.includes('Waiting for startup'))
+      else if (!requests && (output.includes('Ask Codex') || output.includes('gpt-5.4 default')) && !output.includes('Waiting for startup')) {
+        herdr('pane', 'send-keys', pane, 'ctrl+u');
         herdr('pane', 'run', pane, 'Local restoration test. Do not execute tools.');
+      }
       return output.includes(text) && sessionId();
     }, 'saved Codex reply and lifecycle mapping');
     const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
