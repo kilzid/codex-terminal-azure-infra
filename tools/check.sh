@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-node --test tests/session-manager.test.mjs
+node --test tests/session-manager.test.mjs tests/codex-startup.test.mjs
 python3 tools/privacy.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 operations/cli.py --help >/dev/null

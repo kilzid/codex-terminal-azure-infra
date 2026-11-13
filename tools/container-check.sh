@@ -51,6 +51,7 @@ for phase in prepare verify; do
     -e CODEX_HOME=/home/node/.codex/real-restore-test \
     -v "$PWD/runtime/session-manager.mjs:/opt/codex-session.mjs:ro" \
     -v "$PWD/runtime/session-hooks.toml:/etc/codex/requirements.toml:ro" \
+    -v "$PWD/tests/codex-startup.mjs:/tmp/codex-startup.mjs:ro" \
     -v "$PWD/tests/real-codex-restore.mjs:/tmp/real-codex-restore.mjs:ro" \
     "$image" node /tmp/real-codex-restore.mjs "$phase"
 done

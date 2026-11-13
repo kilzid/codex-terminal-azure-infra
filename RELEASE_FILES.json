@@ -59,6 +59,8 @@
   "schemas/images.schema.json",
   "schemas/private.schema.json",
   "schemas/runtime-secrets.schema.json",
+  "tests/codex-startup.mjs",
+  "tests/codex-startup.test.mjs",
   "tests/container-restore.mjs",
   "tests/native-smoke.mjs",
   "tests/real-codex-restore.mjs",
