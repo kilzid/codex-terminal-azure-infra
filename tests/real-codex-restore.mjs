@@ -6,6 +6,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { startupAction } from './codex-startup.mjs';
 const phase = process.argv[2];
 assert.ok(['prepare', 'verify'].includes(phase));
 const home = process.env.CODEX_HOME;
@@ -101,23 +102,23 @@ try {
     client = pty.spawn('herdr', ['--session', 'main'], { env: process.env, cols: 120, rows: 40 });
     client.onData(() => {});
     herdr('pane', 'run', pane, 'codex --dangerously-bypass-approvals-and-sandbox');
-    await until(() => screen().includes('Ask Codex'), 'Codex input readiness');
-    await pause(1000);
-    herdr('pane', 'run', pane, 'Local restoration test. Do not execute tools.');
+    let lastSeedAt = 0;
     await until(async () => {
       const output = screen();
-      // Only this disposable test home's known hooks are trusted by the fixture.
-      if (output.includes('Hooks need review')) {
+      const action = startupAction(output, { running: codexRunning(), requests,
+        coolingDown: Date.now() - lastSeedAt < 1000 });
+      // This driver exists only in prepare. Verify sends no input at all.
+      if (action === 'trust-picker') {
         herdr('pane', 'send-keys', pane, '2');
         await pause(250);
         herdr('pane', 'send-keys', pane, 'enter');
-      } else if (output.includes('t trust all')) {
+      } else if (action === 'trust-browser') {
         herdr('pane', 'send-keys', pane, 't');
         await pause(250);
         herdr('pane', 'send-keys', pane, 'esc');
-      } else if (output.includes('Lifecycle hooks from config')) herdr('pane', 'send-keys', pane, 'esc');
-      else if (output.includes('SessionStart hooks')) herdr('pane', 'send-keys', pane, 'esc');
-      else if (!requests && (output.includes('Ask Codex') || output.includes('gpt-5.4 default')) && !output.includes('Waiting for startup')) {
+      } else if (action === 'close-browser') herdr('pane', 'send-keys', pane, 'esc');
+      else if (action === 'seed') {
+        lastSeedAt = Date.now();
         herdr('pane', 'send-keys', pane, 'ctrl+u');
         herdr('pane', 'run', pane, 'Local restoration test. Do not execute tools.');
       }

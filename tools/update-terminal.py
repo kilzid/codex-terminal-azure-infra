@@ -202,6 +202,25 @@ class Updater:
             self.api('/statuses/' + head, 'POST', {'state': state, 'context': name,
                 'description': descriptions[state], 'target_url': target})
 
+    def report_validation_failure(self, run, jobs):
+        # Report only fixed required names/states, never raw logs or job output.
+        states = {'success', 'failure', 'cancelled', 'skipped', 'timed_out', 'action_required',
+                  'neutral', 'startup_failure', 'stale'}
+        results = {}
+        for name in sorted(REQUIRED_JOBS):
+            matching = [j for j in jobs if j.get('name') == name]
+            result = matching[-1].get('conclusion') if matching else 'missing'
+            results[name] = result if result in states else 'missing'
+        target = 'https://github.com/' + self.api.repository + '/actions/runs/' + str(run['id'])
+        print(json.dumps({'status': 'image-validation-failed', 'runUrl': target,
+                          'requiredJobs': results}), flush=True)
+        summary = os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary, 'a', encoding='utf-8') as output:
+                output.write('## Terminal image validation failed\n\n'
+                             '[Open the failing Validate run](' + target + '). The candidate remains unmerged.\n\n')
+                for name, result in results.items(): output.write('- `' + name + '`: ' + result + '\n')
+
     def validate(self, branch, head):
         path = '/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=' + branch + '&per_page=100'
         def runs():
@@ -221,6 +240,7 @@ class Updater:
                         jobs = self.api.pages('/actions/runs/' + str(run['id']) + '/jobs', key='jobs')
                         if not passed_jobs(run, jobs, head):
                             self.validation_status(head, 'failure', run['id'])
+                            self.report_validation_failure(run, jobs)
                             raise UpdateError('image-validation-failed-pr-left-open')
                         # Publish only after the entire workflow and both required jobs
                         # succeeded for this exact head, event and branch.

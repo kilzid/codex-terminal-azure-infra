@@ -317,3 +317,32 @@ class ImageUpdateTests(unittest.TestCase):
             with self.subTest(value=value), patch.object(u, 'read_url', return_value=(json.dumps(value).encode(), {})):
                 with self.assertRaisesRegex(u.UpdateError, '^invalid-paginated-response$'):
                     u.GitHub(self.repo, 'synthetic').pages('/actions/runs/10/jobs', key='jobs')
+
+
+class ImageFailureReportingTests(unittest.TestCase):
+    def test_failure_summary_links_to_checks_without_copying_untrusted_output(self):
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / 'summary.md'
+            api = Mock(repository='example/infra')
+            updater = u.Updater(api)
+            jobs = [{'name': 'validate', 'conclusion': 'success'},
+                    {'name': 'container-policies', 'conclusion': 'failure', 'output': 'private-output'},
+                    {'name': 'private-job-name', 'conclusion': 'failure'}]
+            with patch.dict(u.os.environ, {'GITHUB_STEP_SUMMARY': str(summary)}), patch('sys.stdout', new_callable=io.StringIO) as stdout:
+                updater.report_validation_failure({'id': 10}, jobs)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report['requiredJobs'], {'container-policies': 'failure', 'validate': 'success'})
+            self.assertEqual(report['runUrl'], 'https://github.com/example/infra/actions/runs/10')
+            text = summary.read_text()
+            self.assertIn(report['runUrl'], text)
+            self.assertNotIn('private-output', text + stdout.getvalue())
+            self.assertNotIn('private-job-name', text + stdout.getvalue())
+
+    def test_missing_jobs_and_unknown_conclusions_remain_sanitized(self):
+        import io
+        updater = u.Updater(Mock(repository='example/infra'))
+        with patch.dict(u.os.environ, {'GITHUB_STEP_SUMMARY': ''}), patch('sys.stdout', new_callable=io.StringIO) as stdout:
+            updater.report_validation_failure({'id': 10}, [{'name': 'validate', 'conclusion': 'untrusted-text'}])
+        self.assertEqual(json.loads(stdout.getvalue())['requiredJobs'], {'container-policies': 'missing', 'validate': 'missing'})
