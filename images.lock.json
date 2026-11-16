@@ -1,5 +1,5 @@
 {
-  "terminal": "ghcr.io/dorseg/codex-terminal@sha256:10ab6bb8bb14a593d147febceaab437ed656fd019a7829364fbb98917ef1eaeb",
+  "terminal": "ghcr.io/dorseg/codex-terminal@sha256:700372fddf9dbf3ac2dbce484b4436d1563876bf5004226eea9ae9b25a812b50",
   "auth": "quay.io/oauth2-proxy/oauth2-proxy@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048",
   "https": "docker.io/library/caddy@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0",
   "os": {
