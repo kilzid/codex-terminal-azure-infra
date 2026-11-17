@@ -66,6 +66,7 @@
   "tests/native-smoke.mjs",
   "tests/real-codex-restore.mjs",
   "tests/session-manager.test.mjs",
+  "tests/shell-aliases.test.mjs",
   "tests/test_cancellation.py",
   "tests/test_cloud.py",
   "tests/test_controller.py",

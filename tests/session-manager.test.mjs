@@ -106,7 +106,7 @@ test('supervisor freezes before forwarding termination signals', async () => {
   const { once } = await import('node:events');
   for (const signal of ['SIGTERM', 'SIGINT']) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-supervisor-'));
-    const env = { ...process.env, TMUX_TMPDIR: dir, CODEX_HOME: dir };
+    const env = { ...process.env, HOME: dir, TMUX_TMPDIR: dir, CODEX_HOME: dir };
     const run = (...args) => execFileSync('tmux', args, { env, stdio: ['ignore', 'pipe', 'ignore'] });
     let child;
     try {
@@ -123,6 +123,7 @@ test('supervisor freezes before forwarding termination signals', async () => {
       const code = `import { supervise } from ${JSON.stringify(new URL('../runtime/session-manager.mjs', import.meta.url).href)}; supervise(${JSON.stringify(launcher)});`;
       child = spawn(process.execPath, ['--input-type=module', '-e', code], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       await once(child.stdout, 'data');
+      assert.ok(fs.existsSync(path.join(dir, 'shell/aliases.bash')), 'aliases are prepared before launching the terminal');
       const exited = once(child, 'exit');
       child.kill(signal);
       assert.deepEqual(await exited, [0, null]);
