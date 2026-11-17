@@ -224,3 +224,23 @@ class RuntimeTests(unittest.TestCase):
         terminal = compose(self.images, 'Standard_B1ms')['services']['terminal']
         self.assertEqual(terminal['command'], ['node', '/opt/codex-session.mjs'])
         self.assertEqual(terminal['stop_grace_period'], '30s')
+
+
+class BrowserVerificationTests(unittest.TestCase):
+    def test_deployed_browser_image_must_pass_real_browser_probe(self):
+        image = 'synthetic@sha256:' + 'f'*64
+        payload = {'images': {'terminal': image}, 'browserProbe': base64.b64encode(b'synthetic probe').decode()}
+        expected = {'services': {'terminal': {'image': image}}}
+        with patch.object(host, 'compose', return_value=b'BROWSER_CHROMIUM_NAVIGATION_SCREENSHOT_OK') as run:
+            host.verify_browser(payload, expected)
+        self.assertEqual(run.call_args.args, ('exec', '-T', 'terminal', 'node', '--input-type=module', '-'))
+        self.assertEqual(run.call_args.kwargs['data'], b'synthetic probe')
+        with patch.object(host, 'compose', return_value=b'BROWSER_PROBE_FAILED'):
+            with self.assertRaises(AssertionError): host.verify_browser(payload, expected)
+
+    def test_pre_browser_rollback_does_not_require_new_browser_tooling(self):
+        payload = {'images': {'terminal': 'new-browser-image'}}
+        previous = {'services': {'terminal': {'image': 'previous-compact-image'}}}
+        with patch.object(host, 'compose') as run:
+            host.verify_browser(payload, previous)
+        run.assert_not_called()

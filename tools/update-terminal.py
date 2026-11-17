@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 
 IMAGE = 'ghcr.io/dorseg/codex-terminal'
+IMAGE_TAG = 'browser'
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
 PREFIX = 'automation/terminal-image-'
 BOT = {'name': 'github-actions[bot]', 'email': '41898282+github-actions[bot]@users.noreply.github.com'}
@@ -49,7 +50,7 @@ def read_url(url, *, headers=None, method='GET', body=None):
 def latest_digest():
     token_raw, _ = read_url('https://ghcr.io/token?scope=repository:dorseg/codex-terminal:pull')
     token = json.loads(token_raw)['token']
-    raw, headers = read_url('https://ghcr.io/v2/dorseg/codex-terminal/manifests/latest', headers={
+    raw, headers = read_url('https://ghcr.io/v2/dorseg/codex-terminal/manifests/' + IMAGE_TAG, headers={
         'Authorization': 'Bearer ' + token,
         'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'})
     digest = headers.get('Docker-Content-Digest', '')

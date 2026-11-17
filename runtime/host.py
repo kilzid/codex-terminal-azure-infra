@@ -200,6 +200,17 @@ def boundaries(expected):
     return values
 
 
+def verify_browser(payload, expected):
+    # Rollback may restore the pre-browser image. Verify that image's original
+    # boundaries without requiring tooling it never included.
+    if expected['services']['terminal']['image'] != payload['images']['terminal']: return
+    global PHASE
+    PHASE = 'verify-browser'
+    output = compose('exec', '-T', 'terminal', 'node', '--input-type=module', '-',
+                     data=base64.b64decode(payload['browserProbe']), timeout=90)
+    assert b'BROWSER_CHROMIUM_NAVIGATION_SCREENSHOT_OK' in output
+
+
 def verify(payload, *, deep=True):
     global PHASE
     PHASE = 'verify-services'
@@ -227,6 +238,7 @@ def verify(payload, *, deep=True):
                          'node', '--input-type=module', '-', data=base64.b64decode(payload['nativeProbe']), timeout=90)
         assert any(marker in native for marker in [b'DEPLOYED_TERMBEAM_HTTP_WEBSOCKET_ORIGIN_OK',
                                                   b'DEPLOYED_REMOBI_HTTP_WEBSOCKET_ORIGIN_PTY_OK'])
+        verify_browser(payload, expected)
     return {name: hashlib.sha256(v['Id'].encode()).hexdigest() for name, v in values.items()}
 
 

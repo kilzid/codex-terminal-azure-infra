@@ -1,6 +1,6 @@
 # Acceptance and rollout evidence
 
-Run `bash tools/check.sh` on every PR. CI also runs `tools/container-check.sh` on Linux under the same memory, CPU, capability, seccomp and AppArmor settings as the VM. The test image always comes from the immutable lockfile.
+Run `bash tools/check.sh` on every PR. CI also runs `tools/container-check.sh` on Linux under the same memory, CPU, capability, seccomp and AppArmor settings as the VM. The test image always comes from the immutable lockfile. The browser variant must pass a local Chromium navigation, DOM interaction and PNG screenshot probe as UID 1000 under the same container restrictions. Production runs the same probe; browser automation adds no public port or desktop service.
 
 Image updater tests cover registry digest verification, Linux AMD64 support, terminal-only lockfile changes, duplicate PR reuse, modified branch rejection, failed and stale checks, fresh-main and exact-head merge guards, explicit production dispatch and dispatch recovery. A live no-update discovery run verifies registry access; it does not prove the new-image PR/merge path. Observe a real bot image update through Validate, protected merge, Production apply and VM verification before claiming that full path has passed.
 

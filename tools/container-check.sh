@@ -22,13 +22,14 @@ docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
   --security-opt no-new-privileges:true \
   --security-opt "seccomp=$PWD/runtime/seccomp.json" --security-opt apparmor=codex-terminal \
   -v "$check_root/workspace:/workspace" -v "$check_root/config:/home/node/.codex" \
+  -v "$PWD/runtime/browser-probe.mjs:/tmp/browser-probe.mjs:ro" \
   -v "$PWD/runtime/sandbox-check.sh:/tmp/sandbox-check.sh:ro" \
   -v "$PWD/runtime/session-manager.mjs:/opt/codex-session.mjs:ro" \
   -v "$PWD/runtime/session-hooks.toml:/etc/codex/requirements.toml:ro" \
   -e SESSION_LAUNCHER=/opt/codex-session.mjs \
   -v "$PWD/runtime/native-probe.mjs:/tmp/native-probe.mjs:ro" \
   -v "$PWD/tests/native-smoke.mjs:/tmp/smoke.mjs:ro" \
-  "$image" sh -ceu 'sh /tmp/sandbox-check.sh; node /tmp/smoke.mjs'
+  "$image" sh -ceu 'sh /tmp/sandbox-check.sh; node /tmp/browser-probe.mjs; node /tmp/smoke.mjs'
 # Real container replacement: the second run has no prior processes or Herdr server.
 for phase in prepare verify; do
   docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
