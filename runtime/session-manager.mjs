@@ -424,7 +424,30 @@ export function restore() {
 function release() {
   for (const name of ['deployment.json', 'herdr-deployment.json']) fs.rmSync(path.join(state, name), { force: true });
 }
+export function prepareShell(home = homedir(), config = process.env.CODEX_HOME || path.join(home, '.codex')) {
+  const directory = path.join(config, 'shell');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const aliases = path.join(directory, 'aliases.bash');
+  try {
+    fs.writeFileSync(aliases, "# Personal Bash aliases; retained on the Codex volume.\nalias '??'='codex --yolo'\n",
+      { flag: 'wx', mode: 0o600 });
+  } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  // Reinstall only the source hook in each fresh container. Personal definitions
+  // stay in the existing persistent volume and are never rewritten on startup.
+  const file = path.join(home, '.bashrc');
+  let previous = '';
+  try { previous = fs.readFileSync(file, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const block = '# codex-terminal:persistent-aliases:start\n' +
+    'if [ -r ' + quote(aliases) + ' ]; then\n  . ' + quote(aliases) + '\nfi\n' +
+    '# codex-terminal:persistent-aliases:end\n';
+  const pattern = /# codex-terminal:persistent-aliases:start\n[\s\S]*?# codex-terminal:persistent-aliases:end\n?/g;
+  const next = pattern.test(previous) ? previous.replace(pattern, block)
+    : previous + (previous.endsWith('\n') || !previous ? '' : '\n') + block;
+  if (next !== previous) fs.writeFileSync(file, next, { mode: 0o600 });
+  return aliases;
+}
 export function supervise(launcher = path.join(process.env.TERMINAL_ROOT || '/opt/codex-terminal', 'start.mjs')) {
+  prepareShell();
   fs.rmSync(frozen, { force: true });
   if (herdrBackend) prepareHerdrEnvironment();
   restore();
@@ -449,6 +472,7 @@ export function supervise(launcher = path.join(process.env.TERMINAL_ROOT || '/op
 if (process.argv[1] === '-' || (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]))) {
   try {
     switch (process.argv[2]) {
+      case 'setup-shell': prepareShell(); break;
       case 'hook': hook(JSON.parse(fs.readFileSync(0, 'utf8'))); break;
       case 'freeze': checkpoint(true); break;
       case 'release': release(); break;
