@@ -18,7 +18,7 @@ docker run --rm --user 1000:1000 --cap-drop ALL --network none \
     fi
   '
 docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
-  --memory 1280m --memory-swap 1280m --cpus 0.9 \
+  --memory 3g --memory-swap 3g --cpus 1.8 \
   --security-opt no-new-privileges:true \
   --security-opt "seccomp=$PWD/runtime/seccomp.json" --security-opt apparmor=codex-terminal \
   -v "$check_root/workspace:/workspace" -v "$check_root/config:/home/node/.codex" \
@@ -32,7 +32,7 @@ docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
 # Real container replacement: the second run has no prior processes or Herdr server.
 for phase in prepare verify; do
   docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
-    --memory 1280m --memory-swap 1280m --cpus 0.9 \
+    --memory 3g --memory-swap 3g --cpus 1.8 \
     --security-opt no-new-privileges:true \
     --security-opt "seccomp=$PWD/runtime/seccomp.json" --security-opt apparmor=codex-terminal \
     -v "$check_root/workspace:/workspace" -v "$check_root/config:/home/node/.codex" \
@@ -44,7 +44,7 @@ done
 # Exercise the real CLI and managed hooks across a second actual replacement.
 for phase in prepare verify; do
   docker run --rm --user 1000:1000 --cap-drop ALL --pids-limit 512 \
-    --memory 1280m --memory-swap 1280m --cpus 0.9 \
+    --memory 3g --memory-swap 3g --cpus 1.8 \
     --security-opt no-new-privileges:true \
     --security-opt "seccomp=$PWD/runtime/seccomp.json" --security-opt apparmor=codex-terminal \
     -v "$check_root/workspace:/workspace" -v "$check_root/config:/home/node/.codex" \
