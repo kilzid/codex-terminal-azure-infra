@@ -346,3 +346,16 @@ class ImageFailureReportingTests(unittest.TestCase):
         with patch.dict(u.os.environ, {'GITHUB_STEP_SUMMARY': ''}), patch('sys.stdout', new_callable=io.StringIO) as stdout:
             updater.report_validation_failure({'id': 10}, [{'name': 'validate', 'conclusion': 'untrusted-text'}])
         self.assertEqual(json.loads(stdout.getvalue())['requiredJobs'], {'container-policies': 'missing', 'validate': 'missing'})
+
+
+class BrowserImageChannelTests(unittest.TestCase):
+    def test_discovery_always_tracks_browser_and_verifies_its_digest(self):
+        manifest = {'schemaVersion': 2, 'manifests': [{'platform': {'architecture': 'amd64', 'os': 'linux'},
+                                                    'digest': 'sha256:' + 'f'*64}]}
+        raw = json.dumps(manifest).encode()
+        digest = 'sha256:' + u.hashlib.sha256(raw).hexdigest()
+        with patch.object(u, 'read_url', side_effect=[(b'{"token":"synthetic"}', {}),
+                         (raw, {'Docker-Content-Digest': digest})]) as read:
+            self.assertEqual(u.latest_digest(), digest)
+        self.assertEqual(u.IMAGE_TAG, 'browser')
+        self.assertEqual(read.call_args_list[1].args[0], 'https://ghcr.io/v2/dorseg/codex-terminal/manifests/browser')

@@ -84,6 +84,7 @@ class Controller:
                 'identity': {'tenant': p['tenantId'], 'client': p['runtimeClientId'], 'owner': p['userObjectId'], 'host': p['hostname']},
                 'sandbox': base64.b64encode((ROOT / 'runtime/sandbox-check.sh').read_bytes()).decode(),
                 'nativeProbe': base64.b64encode((ROOT / 'runtime/native-probe.mjs').read_bytes()).decode(),
+                'browserProbe': base64.b64encode((ROOT / 'runtime/browser-probe.mjs').read_bytes()).decode(),
                 'runtimeRevisions': self.settings['retention']['runtimeRevisions'],
                 'runCommandDays': self.settings['retention']['runCommandDays']}
 

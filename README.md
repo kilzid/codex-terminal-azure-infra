@@ -4,6 +4,8 @@ Deploy an Entra-protected [Codex terminal](https://github.com/dorseg/codex-termi
 
 Fork this repository, then follow [fresh installation](docs/fresh-install.md) or [adoption](docs/adoption.md). The default baseline is Debian 12 on **Standard_B2als_v2** (2 vCPUs, 4 GiB RAM; 3 GiB terminal limit), a detached persistent OS disk, daily seven-day VM backups, HTTPS and access restricted to one immutable Entra user ID. SSH is closed. The terminal receives neither Azure identity nor proxy credentials.
 
+The terminal uses the upstream `browser` image variant, including headless Chromium and `playwright-cli`. Image updates remain pinned to immutable digests and include browser navigation, interaction and screenshot checks.
+
 The repository contains:
 
 - `infra/`: networking, VM, backup, monitoring and optional retained recovery modules.

@@ -38,6 +38,7 @@
   "runtime/NOTICE",
   "runtime/apparmor.profile",
   "runtime/boot-guards.sh",
+  "runtime/browser-probe.mjs",
   "runtime/cloud-init.yml",
   "runtime/codex-config.py",
   "runtime/docker-daemon.json",
