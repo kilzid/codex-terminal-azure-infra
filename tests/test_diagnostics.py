@@ -9,8 +9,8 @@ from diagnostics import diagnose, errors
 
 class DiagnosticsTests(unittest.TestCase):
     def test_only_public_states_and_error_codes_leave_read_only_requests(self):
-        cloud = Mock(rg='/subscriptions/synthetic/resourceGroups/private-group',
-                     private={'resources': {'vaultName': 'private-vault'}})
+        cloud = Mock(rg='/subscriptions/synthetic/resourceGroups/private-group', vm='/synthetic/private-vm',
+                     private={'profile': 'adopted', 'resources': {'vaultName': 'private-vault'}})
         vault = cloud.rg + '/providers/Microsoft.RecoveryServices/vaults/private-vault'
         cloud.pending_backup.return_value = None
         cloud.arm.side_effect = [
@@ -19,9 +19,12 @@ class DiagnosticsTests(unittest.TestCase):
                             'errorDetails': [{'errorCode': 123, 'errorString': 'private resource details'}]}},
             {'properties': {'provisioningState': 'Failed', 'error': {'code': 'DeploymentFailed', 'message': 'private deployment'}}},
             {'value': [{'properties': {'provisioningState': 'Failed', 'statusMessage': json.dumps({
-                'error': {'code': 'AuthorizationFailed', 'message': 'private principal'}})}}]}]
+                'error': {'code': 'AuthorizationFailed', 'message': 'private principal'}})}}]},
+            {'location': 'israelcentral', 'properties': {'hardwareProfile': {'vmSize': 'Standard_B1ms'}}},
+            {'value': [{'name': 'Standard_B2als_v2'}]}]
         result = diagnose(cloud)
         self.assertNotIn('private', json.dumps(result))
+        self.assertEqual(result['virtualMachine'], {'profile': 'adopted', 'inIsraelCentral': True, 'size': 'Standard_B1ms', 'b2alsV2ListedForResize': True})
         self.assertEqual(result['backupJobs'][0]['errorCodes'], [123])
         self.assertEqual(result['deployment']['unfinishedOperations'][0]['errorCodes'], ['AuthorizationFailed'])
         self.assertTrue(all(len(call.args) == 1 for call in cloud.arm.call_args_list), 'all requests use default GET')

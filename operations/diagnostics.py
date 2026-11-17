@@ -61,7 +61,15 @@ def diagnose(cloud):
         op = operation.get('properties', {})
         if op.get('provisioningState') != 'Succeeded':
             summary.append({'status': state(op.get('provisioningState')), 'errorCodes': errors(op)})
-    return {'backupJobs': backup, 'resumableBackup': cloud.pending_backup() is not None, 'deployment': {'status': state(p.get('provisioningState')),
+    vm = cloud.arm(cloud.vm, api='2025-04-01')
+    sizes = cloud.arm(cloud.vm + '/vmSizes', api='2025-04-01').get('value', [])
+    size = vm.get('properties', {}).get('hardwareProfile', {}).get('vmSize')
+    profile = cloud.private.get('profile')
+    machine = {'profile': profile if profile in ['adopted', 'deployment'] else 'Other',
+               'inIsraelCentral': vm.get('location', '').lower() == 'israelcentral',
+               'size': size if size in ['Standard_B1ms', 'Standard_B2als_v2'] else 'Other',
+               'b2alsV2ListedForResize': any(v.get('name') == 'Standard_B2als_v2' for v in sizes)}
+    return {'virtualMachine': machine, 'backupJobs': backup, 'resumableBackup': cloud.pending_backup() is not None, 'deployment': {'status': state(p.get('provisioningState')),
             'errorCodes': errors(p), 'unfinishedOperations': summary[:20]}}
 
 
