@@ -2,7 +2,7 @@
 
 Deploy an Entra-protected [Codex terminal](https://github.com/dorseg/codex-terminal) into your own Azure account. This repository owns the infrastructure, host configuration, security policy and deployed image versions.
 
-Fork this repository, then follow [fresh installation](docs/fresh-install.md) or [adoption](docs/adoption.md). The default baseline is Debian 12 on **Standard_B1ms**, a detached persistent OS disk, daily seven-day VM backups, HTTPS and access restricted to one immutable Entra user ID. SSH is closed. The terminal receives neither Azure identity nor proxy credentials.
+Fork this repository, then follow [fresh installation](docs/fresh-install.md) or [adoption](docs/adoption.md). The default baseline is Debian 12 on **Standard_B2als_v2** (2 vCPUs, 4 GiB RAM; 3 GiB terminal limit), a detached persistent OS disk, daily seven-day VM backups, HTTPS and access restricted to one immutable Entra user ID. SSH is closed. The terminal receives neither Azure identity nor proxy credentials.
 
 The repository contains:
 

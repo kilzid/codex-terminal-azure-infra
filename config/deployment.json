@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "vmSize": "Standard_B1ms",
+  "vmSize": "Standard_B2als_v2",
   "monthlyBudget": 100,
   "backup": {
     "dailyRetentionDays": 7,

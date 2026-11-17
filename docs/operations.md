@@ -39,7 +39,7 @@ OS image version changes require an explicit replacement/recovery procedure; an 
 
 Manage domain registration and DNS with your provider. Point an A record for the chosen hostname to the deployment's private recorded public IP (or a supported CNAME to its Azure hostname). Update `hostname` only in the private configuration and republish the environment secret using bootstrap. `plan` validates the change; `apply` adds the new Entra callback, updates only the affected authentication/TLS configuration, verifies public TLS and redirects, and removes the old callback. Failure restores the previous runtime configuration and callbacks. Never put your domain or DNS provider credentials in Git.
 
-VM size and container limits are public settings in the selected profile. Keep B1ms during adoption. A later size change needs its own reviewed maintenance change. Apply deallocates the VM, updates its size and starts it again; a failed resize restores the previous size and starts it. Resizing interrupts active sessions. Automatic reconciliation must not replace the VM or change disk/IP identity to satisfy a size request.
+VM size and container limits are public settings in the selected profile. The profiles select B2als v2 (2 vCPUs, 4 GiB RAM), with a 3 GiB terminal limit and a 1.8-vCPU container ceiling. First adoption must preserve the inventoried VM size. A later size change needs its own reviewed maintenance change. Apply deallocates the VM, updates its size and starts it again; a failed resize restores the previous size and starts it. Resizing interrupts active sessions. Automatic reconciliation must not replace the VM or change disk/IP identity to satisfy a size request.
 
 ## Credentials
 

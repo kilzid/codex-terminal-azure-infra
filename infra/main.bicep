@@ -2,7 +2,7 @@ targetScope = 'resourceGroup'
 param location string
 param prefix string = 'codex-terminal'
 @allowed(['Standard_B1ms', 'Standard_B2als_v2'])
-param vmSize string = 'Standard_B1ms'
+param vmSize string = 'Standard_B2als_v2'
 @secure()
 param adminPublicKey string
 param imageVersion string = '0.20261026.2643'
